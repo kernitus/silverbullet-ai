@@ -26,7 +26,6 @@ import {
 } from "./init.ts";
 import {
   assembleMessagesWithAttachments,
-  cleanMessagesForApi,
   enrichChatMessages,
   isPathAllowed,
   log,
@@ -35,9 +34,8 @@ import { extractFilesFromMarkdown, getFileHandlerExts } from "./files.ts";
 import {
   convertToOpenAITools,
   discoverAllTools,
-  runAgenticChat,
+  runStreamingAgenticChat,
 } from "./tools.ts";
-import { formatReasoningBlock } from "./widgets.ts";
 import {
   buildAgentSystemPrompt,
   discoverAgents,
@@ -61,9 +59,10 @@ interface StreamBuffer {
   status: "streaming" | "complete" | "error";
   error?: string;
   statusMessage?: string;
+  messages?: ChatMessage[];
 }
 const streamBuffers = new Map<string, StreamBuffer>();
-const CHAT_HISTORY_KEY = "ai.panelChatHistory";
+const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 const TOKEN_USAGE_KEY = "ai.panelTokenUsage";
 const PANEL_STATE_KEY = "ai.panelOpen";
 const AGENT_KEY = "ai.panelAgent";
@@ -187,9 +186,7 @@ export async function toggleAIAssistant() {
  * Called from the panel iframe.
  * This is called each time a new message is sent, not just the first one.
  */
-export async function startPanelChat(
-  messages: ChatMessage[],
-): Promise<{
+export async function startPanelChat(messages: ChatMessage[]): Promise<{
   streamId?: string;
   error?: string;
 }> {
@@ -289,8 +286,15 @@ export async function startPanelChat(
       content: systemContent,
     };
 
-    const cleanedMessages = await cleanMessagesForApi(messages);
-    const { messagesWithAttachments } = await enrichChatMessages(cleanedMessages);
+    // Only the new user message is enriched. Earlier SDK parts are immutable history.
+    const last = messages.at(-1);
+    if (!last || last.role !== "user" || typeof last.content !== "string") {
+      throw new Error("A chat turn must end with a user text message.");
+    }
+    const history = messages
+      .slice(0, -1)
+      .filter((message) => message.role !== "system");
+    const { messagesWithAttachments } = await enrichChatMessages([{ ...last }]);
 
     // Prepend page context after message enrichment
     if (contextBlock) {
@@ -332,15 +336,21 @@ export async function startPanelChat(
       agentAttachments,
     );
 
-    runToolLoop(streamId, workingMessages, tools, luaTools).catch(
-      (error: Error) => {
-        const buffer = streamBuffers.get(streamId);
-        if (buffer) {
-          buffer.status = "error";
-          buffer.error = error.message;
-        }
-      },
-    );
+    const transientPrefixLength = 1 + agentAttachments.length;
+    workingMessages.splice(transientPrefixLength, 0, ...history);
+    runToolLoop(
+      streamId,
+      workingMessages,
+      tools,
+      luaTools,
+      transientPrefixLength,
+    ).catch((error: Error) => {
+      const buffer = streamBuffers.get(streamId);
+      if (buffer) {
+        buffer.status = "error";
+        buffer.error = error.message;
+      }
+    });
 
     return { streamId };
   } catch (error) {
@@ -358,21 +368,18 @@ async function runToolLoop(
   messages: ChatMessage[],
   tools: Tool[],
   luaTools: Map<string, LuaToolDefinition>,
+  transientPrefixLength: number,
 ): Promise<void> {
   const buffer = streamBuffers.get(streamId);
   if (!buffer) return;
 
-  // If no tools available, skip the tool loop and just stream
-  if (tools.length === 0) {
-    await streamFinalResponse(streamId, messages);
-    return;
-  }
-
-  const result = await runAgenticChat({
+  const result = await runStreamingAgenticChat({
     messages,
     tools,
     luaTools,
     provider: currentAIProvider,
+    onChunk: (chunk) => buffer.chunks.push(chunk),
+    onReasoningChunk: (chunk) => buffer.reasoningChunks.push(chunk),
     onToolCall: (toolName, _args, result) => {
       const status = result.success ? "✓" : "✗";
       buffer.statusMessage = `${status} ${toolName}`;
@@ -387,53 +394,8 @@ async function runToolLoop(
 
   updateTokenUsage(result.usage);
 
-  if (result.toolCallsText) {
-    buffer.chunks.push(result.toolCallsText);
-  }
-
-  // If reasoning exists and enabled, prepend as code block
-  if (result.finalReasoning && aiSettings?.chat?.showReasoning) {
-    const reasoningBlock = formatReasoningBlock(result.finalReasoning);
-    buffer.chunks.push(reasoningBlock);
-  }
-
-  buffer.chunks.push(result.finalResponse);
+  buffer.messages = result.messages.slice(transientPrefixLength);
   buffer.status = "complete";
-}
-
-/**
- * Stream the final response without tools (fallback when no tools are defined)
- */
-async function streamFinalResponse(
-  streamId: string,
-  messages: ChatMessage[],
-): Promise<void> {
-  const buffer = streamBuffers.get(streamId);
-  if (!buffer) return;
-
-  await currentAIProvider.streamChat({
-    messages,
-    onChunk: (chunk: string) => {
-      buffer.chunks.push(chunk);
-    },
-    onReasoningChunk: (chunk: string) => {
-      buffer.reasoningChunks.push(chunk);
-    },
-    onComplete: (response) => {
-      // If reasoning exists and enabled, prepend as code block
-      if (
-        buffer.reasoningChunks.length > 0 &&
-        aiSettings?.chat?.showReasoning
-      ) {
-        const reasoningBlock = formatReasoningBlock(
-          buffer.reasoningChunks.join(""),
-        );
-        buffer.chunks.unshift(reasoningBlock);
-      }
-      updateTokenUsage(response.usage);
-      buffer.status = "complete";
-    },
-  });
 }
 
 /**
@@ -446,6 +408,7 @@ export function getPanelChatChunk(streamId: string): {
   status: string;
   error?: string;
   statusMessage?: string;
+  messages?: ChatMessage[];
 } {
   const buffer = streamBuffers.get(streamId);
 
@@ -469,6 +432,7 @@ export function getPanelChatChunk(streamId: string): {
     status: buffer.status,
     error: buffer.error,
     statusMessage,
+    messages: buffer.messages,
   };
 }
 
@@ -487,7 +451,7 @@ export async function exportPanelChat(): Promise<void> {
     }
 
     const chatId = stored.id;
-    const history = stored.messages;
+    const history = stored.messages as ChatMessage[];
 
     const existingPages = await index.queryLuaObjects<{ name: string }>(
       "page",
@@ -523,8 +487,28 @@ tags: aichat${agentRef ? `\nagent: "${agentRef}"` : ""}
 
     for (const msg of history) {
       if (msg.role === "system") continue;
-      const needsNewline = msg.content.startsWith("```");
-      content += `**${msg.role}**:${needsNewline ? "\n" : " "}${msg.content}\n\n`;
+      const text =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content
+              .map((part) => {
+                if (part.type === "text") return part.text;
+                if (part.type === "reasoning")
+                  return aiSettings?.chat?.showReasoning ? part.text : "";
+                if (part.type === "tool-call")
+                  return `Tool: ${part.toolName}\n${JSON.stringify(part.input, null, 2)}`;
+                if (part.type === "tool-result")
+                  return `Result: ${part.toolName}\n${part.output.type === "text" ? part.output.value : JSON.stringify(part.output)}`;
+                if (part.type === "image") return "[Image attachment]";
+                if (part.type === "file")
+                  return `[File: ${part.filename || part.mediaType}]`;
+                return "";
+              })
+              .filter(Boolean)
+              .join("\n");
+      if (!text) continue;
+      const needsNewline = text.startsWith("```");
+      content += `**${msg.role}**:${needsNewline ? "\n" : " "}${text}\n\n`;
     }
 
     await space.writePage(pageName, content);

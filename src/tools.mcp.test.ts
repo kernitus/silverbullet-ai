@@ -9,7 +9,7 @@ import {
   requestWriteApproval,
   toolRequiresApproval,
 } from "./tools.ts";
-import { initializeOpenAI } from "./init.ts";
+import { aiSettings, initializeOpenAI } from "./init.ts";
 import { _setMCPClientFactory, clearMCPClients } from "./mcp/index.ts";
 import type { LuaToolDefinition } from "./types.ts";
 
@@ -122,6 +122,7 @@ describe("callTool + listTools (Lua-callable)", () => {
       })
     );
 
+    aiSettings.mcpServers!.srv!.trusted = true;
     const res = await callTool("mcp__srv__add", { a: 2, b: 3 });
     expect(seen).toEqual({ name: "add", args: { a: 2, b: 3 } });
     expect(res).toEqual({ success: true, result: "5" });
@@ -136,6 +137,7 @@ describe("callTool + listTools (Lua-callable)", () => {
       })
     );
 
+    aiSettings.mcpServers!.srv!.trusted = true;
     const res = await callTool("mcp__srv__ping");
     expect(seen).toEqual({});
     expect(res).toEqual({ success: true, result: "pong" });
@@ -172,25 +174,10 @@ describe("callTool + listTools (Lua-callable)", () => {
   });
 });
 
-describe("write approval bypass during callTool", () => {
-  test("requestWriteApproval writes directly while callTool is running", async () => {
-    let write: { success: boolean; error?: string } | undefined;
-    _setMCPClientFactory(() =>
-      fakeClient([{ name: "write" }], async () => {
-        write = await requestWriteApproval("bypass page", "new content");
-        return { content: [{ type: "text", text: "done" }] };
-      })
-    );
-
-    const res = await callTool("mcp__srv__write");
-    expect(res.success).toBe(true);
-    expect(write).toEqual({ success: true });
-    expect(await syscall("space.readPage", "bypass page")).toBe("new content");
-  });
-
-  test("requestWriteApproval still requires approval outside callTool", async () => {
-    await syscall("mock.setPage", "existing", "old");
-    await expect(requestWriteApproval("existing", "new")).rejects.toThrow();
-    expect(await syscall("space.readPage", "existing")).toBe("old");
-  });
+test("direct calls require approval for untrusted MCP tools", async () => {
+  let ran = false;
+  _setMCPClientFactory(() => fakeClient([{ name: "write" }], () => { ran = true; }));
+  // These fixtures have no modal. Failure to show approval must prevent execution.
+  await expect(callTool("mcp__srv__write")).rejects.toThrow("asset.readAsset");
+  expect(ran).toBe(false);
 });

@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import "../mocks/syscalls.ts";
 import "../init.ts";
 import { SDKProvider, SDKEmbeddingProvider, SDKImageProvider } from "./sdk.ts";
-import { toModelMessages } from "./messages.ts";
 
 const connection = {
   provider: "openai",
@@ -184,51 +183,6 @@ test("SDK Gemini keeps system instructions separate and carries tool thought sig
   expect(result.tool_calls?.[0].providerOptions).toBeDefined();
 });
 
-test("message conversion keeps images, documents and tool metadata", () => {
-  const messages = toModelMessages([
-    {
-      role: "user",
-      content: "Attachments",
-      attachments: [
-        {
-          name: "cat.png",
-          type: "image",
-          binary: { mimeType: "image/png", url: "data:image/png;base64,YQ==" },
-        },
-        {
-          name: "report.pdf",
-          type: "document",
-          binary: {
-            mimeType: "application/pdf",
-            url: "data:application/pdf;base64,YQ==",
-          },
-        },
-      ],
-    },
-    {
-      role: "assistant",
-      content: "",
-      tool_calls: [
-        {
-          id: "call-1",
-          type: "function",
-          function: { name: "read_note", arguments: "{}" },
-          providerOptions: { google: { thoughtSignature: "signature" } },
-        },
-      ],
-    },
-  ]);
-  expect(messages[0].content).toMatchObject([
-    { type: "text" },
-    { type: "image", mediaType: "image/png" },
-    { type: "file", filename: "report.pdf" },
-  ]);
-  expect(messages[1].content[0]).toMatchObject({
-    type: "tool-call",
-    providerOptions: { google: { thoughtSignature: "signature" } },
-  });
-});
-
 test("SDK batches embeddings through the configured endpoint", async () => {
   const fetch = vi.fn().mockResolvedValue(
     json({
@@ -346,20 +300,18 @@ test.each([
 );
 
 test("Responses failure never silently retries through Chat Completions", async () => {
-  const fetch = vi
-    .fn()
-    .mockResolvedValue(
-      json(
-        {
-          error: {
-            message: "Unsupported model",
-            type: "invalid_request_error",
-            code: "model_not_supported",
-          },
+  const fetch = vi.fn().mockResolvedValue(
+    json(
+      {
+        error: {
+          message: "Unsupported model",
+          type: "invalid_request_error",
+          code: "model_not_supported",
         },
-        400,
-      ),
-    );
+      },
+      400,
+    ),
+  );
   vi.stubGlobal("fetch", fetch);
   await expect(
     new SDKProvider(connection, "unknown").chat(user),
@@ -489,6 +441,41 @@ test.each([false, true])(
         expect.objectContaining({
           type: "reasoning",
           encrypted_content: "encrypted-reasoning",
+        }),
+      ]),
+    );
+    // Serialise exactly as clientStore does, then continue in a separate SDK call.
+    const saved = JSON.parse(JSON.stringify(result.messages));
+    expect(saved).toHaveLength(4);
+    expect(saved[1].content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "reasoning",
+          providerOptions: expect.any(Object),
+        }),
+        expect.objectContaining({ type: "tool-call", toolCallId: "call-1" }),
+      ]),
+    );
+    expect(saved[2].content[0]).toMatchObject({
+      type: "tool-result",
+      output: { type: "text", value: "Note contents" },
+    });
+    fetch.mockResolvedValueOnce(json(reply("Follow-up answer")));
+    await new SDKProvider(connection, "gpt-5").chat([
+      ...saved,
+      { role: "user", content: "Explain further" },
+    ]);
+    const nextTurn = JSON.parse(fetch.mock.calls[2][1].body);
+    expect(nextTurn.input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "reasoning",
+          encrypted_content: "encrypted-reasoning",
+        }),
+        expect.objectContaining({
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "Note contents",
         }),
       ]),
     );

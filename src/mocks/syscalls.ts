@@ -157,6 +157,8 @@ function setNestedValue(obj: any, path: string, value: any): void {
     case "mock.setPage":
       pages[args[0]] = args[1];
       break;
+    case "space.pageExists":
+      return args[0] in pages;
     case "space.readPage":
       return await Promise.resolve(pages[args[0]]);
     case "space.writePage":

@@ -13,7 +13,9 @@
     if (customStyles) {
       // customStyles is a string of <style> blocks built by SilverBullet core;
       // extract only the CSS text so no other markup can be injected
-      for (const match of customStyles.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) {
+      for (const match of customStyles.matchAll(
+        /<style[^>]*>([\s\S]*?)<\/style>/gi,
+      )) {
         const styleEl = document.createElement("style");
         styleEl.textContent = match[1];
         document.head.appendChild(styleEl);
@@ -25,7 +27,7 @@
 })();
 
 // Needs to match the key in src/chat-panel.ts
-const CHAT_HISTORY_KEY = "ai.panelChatHistory";
+const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
 (function () {
   const messagesContainer = document.getElementById("messages");
@@ -45,11 +47,15 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
   const overflowBtn = document.getElementById("overflow-btn");
   const overflowMenu = document.getElementById("overflow-menu");
   const overflowExportBtn = document.getElementById("overflow-export-btn");
-  const overflowReasoningBtn = document.getElementById("overflow-reasoning-btn");
+  const overflowReasoningBtn = document.getElementById(
+    "overflow-reasoning-btn",
+  );
   const overflowNewChatBtn = document.getElementById("overflow-new-chat-btn");
   const overflowModelNameEl = document.getElementById("overflow-model-name");
   const overflowTokenCountEl = document.getElementById("overflow-token-count");
-  const overflowContextLimitEl = document.getElementById("overflow-context-limit");
+  const overflowContextLimitEl = document.getElementById(
+    "overflow-context-limit",
+  );
 
   let chatHistory = [];
   let chatData = { id: null, messages: [] };
@@ -79,7 +85,9 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
 
       // Update token display (header and overflow menu)
       const tokenCount = formatNumber(status.tokens.total_tokens);
-      const contextLimit = status.model.contextLimit ? formatNumber(status.model.contextLimit) : "--";
+      const contextLimit = status.model.contextLimit
+        ? formatNumber(status.model.contextLimit)
+        : "--";
       tokenCountEl.textContent = tokenCount;
       contextLimitEl.textContent = contextLimit;
       overflowTokenCountEl.textContent = tokenCount;
@@ -100,17 +108,18 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       reasoningIndicatorEl.classList.remove("enabled", "disabled");
       if (lastReasoningEnabled) {
         reasoningIndicatorEl.classList.add("enabled");
-        reasoningIndicatorEl.title = "Reasoning display enabled (click to disable)";
+        reasoningIndicatorEl.title =
+          "Reasoning display enabled (click to disable)";
       } else {
         reasoningIndicatorEl.classList.add("disabled");
-        reasoningIndicatorEl.title = "Reasoning display disabled (click to enable)";
+        reasoningIndicatorEl.title =
+          "Reasoning display disabled (click to enable)";
       }
 
       // Update overflow menu toggle states
       overflowReasoningBtn.classList.toggle("enabled", lastReasoningEnabled);
-      document.getElementById("overflow-reasoning-label").textContent = lastReasoningEnabled
-        ? "Reasoning (on)"
-        : "Reasoning (off)";
+      document.getElementById("overflow-reasoning-label").textContent =
+        lastReasoningEnabled ? "Reasoning (on)" : "Reasoning (off)";
     } catch (e) {
       console.error("Failed to update chat status:", e);
       reasoningIndicatorEl.classList.add("disabled");
@@ -119,8 +128,12 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
 
   async function toggleReasoning() {
     try {
-      await syscall("system.invokeFunction", "silverbullet-ai.toggleReasoningEnabled");
+      await syscall(
+        "system.invokeFunction",
+        "silverbullet-ai.toggleReasoningEnabled",
+      );
       await updateChatStatus();
+      if (!isStreaming) await renderAllMessages();
     } catch (e) {
       console.error("Failed to toggle reasoning:", e);
     }
@@ -169,7 +182,10 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
           if (searchTerm) {
             const label = (opt.label || "").toLowerCase();
             const displayLabel = (opt.displayLabel || "").toLowerCase();
-            if (!label.includes(searchLower) && !displayLabel.includes(searchLower)) {
+            if (
+              !label.includes(searchLower) &&
+              !displayLabel.includes(searchLower)
+            ) {
               return false;
             }
           }
@@ -221,7 +237,9 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     dropdown.innerHTML = items
       .map((item, i) => {
         const label = escapeHtml(item.displayLabel || item.label);
-        const detail = item.detail ? `<span class="detail">${escapeHtml(item.detail)}</span>` : "";
+        const detail = item.detail
+          ? `<span class="detail">${escapeHtml(item.detail)}</span>`
+          : "";
         const cssClass = item.cssClass || "";
         return `<div class="autocomplete-item ${i === 0 ? "selected" : ""} ${cssClass}" data-index="${i}">
           <span class="page-name">${label}</span>${detail}
@@ -280,6 +298,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       if (stored && stored.messages) {
         chatData = stored;
         chatHistory = chatData.messages;
+        await updateChatStatus();
         await renderAllMessages();
       } else {
         chatData = { id: generateChatId(), messages: [] };
@@ -319,6 +338,27 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     return msgEl;
   }
 
+  function messageText(message) {
+    if (typeof message.content === "string")
+      return message.content.replace(
+        /<context\b[^>]*>[\s\S]*?<\/context>\s*/g,
+        "",
+      );
+    return message.content
+      .map((part) => {
+        if (part.type === "text") return part.text;
+        if (part.type === "reasoning" && lastReasoningEnabled) return part.text;
+        if (part.type === "tool-call") return `**Tool: ${part.toolName}**`;
+        if (part.type === "tool-result") return `Tool result: ${part.toolName}`;
+        if (part.type === "image") return "[Image attachment]";
+        if (part.type === "file")
+          return `[File: ${part.filename || part.mediaType}]`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
   async function renderAllMessages() {
     messagesContainer.innerHTML = "";
 
@@ -334,7 +374,30 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
 
     for (const msg of chatHistory) {
       if (msg.role !== "system") {
-        await renderMessage(msg.role, msg.content);
+        const content = messageText(msg);
+        if (content) {
+          const element = await renderMessage(
+            msg.role === "tool" ? "assistant" : msg.role,
+            content,
+          );
+          if (Array.isArray(msg.content))
+            for (const part of msg.content) {
+              if (part.type !== "tool-result" && part.type !== "tool-call")
+                continue;
+              const details = document.createElement("details");
+              const summary = document.createElement("summary");
+              summary.textContent =
+                part.type === "tool-call" ? "Arguments" : "Result";
+              const pre = document.createElement("pre");
+              pre.textContent = JSON.stringify(
+                part.type === "tool-call" ? part.input : part.output,
+                null,
+                2,
+              );
+              details.append(summary, pre);
+              element.appendChild(details);
+            }
+        }
       }
     }
   }
@@ -367,7 +430,10 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
           } catch (e) {
             console.error("Failed to render markdown:", e);
           }
-          chatHistory.push({ role: "assistant", content: fullResponse });
+          if (!Array.isArray(result.messages))
+            throw new Error("Chat completed without SDK messages");
+          chatHistory = result.messages;
+          await renderAllMessages();
           await saveHistory();
           await updateChatStatus();
           break;
@@ -469,10 +535,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
   async function exportChat() {
     if (chatHistory.length === 0) return;
     try {
-      await syscall(
-        "system.invokeFunction",
-        "silverbullet-ai.exportPanelChat",
-      );
+      await syscall("system.invokeFunction", "silverbullet-ai.exportPanelChat");
     } catch (e) {
       console.error("Failed to export chat:", e);
     }
@@ -487,7 +550,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
   function updateAgentIndicator(agent) {
     displayedAgentRef = agent?.ref ?? null;
     if (agent && agent.aiagent) {
-      const agentName = agent.aiagent.name || agent.ref.split("/").pop() || agent.ref;
+      const agentName =
+        agent.aiagent.name || agent.ref.split("/").pop() || agent.ref;
       panelTitleEl.textContent = agentName;
       panelTitleEl.classList.add("has-agent");
       panelTitleEl.title = "Click to change agent";
@@ -618,14 +682,20 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
 
   // Close overflow menu when clicking outside
   document.addEventListener("click", function (e) {
-    if (!overflowMenu.classList.contains("hidden") && !e.target.closest(".overflow-menu-container")) {
+    if (
+      !overflowMenu.classList.contains("hidden") &&
+      !e.target.closest(".overflow-menu-container")
+    ) {
       overflowMenu.classList.add("hidden");
     }
   });
 
   modelDisplayEl.addEventListener("click", async function () {
     try {
-      await syscall("system.invokeCommand", "AI: Select Text Model from Config");
+      await syscall(
+        "system.invokeCommand",
+        "AI: Select Text Model from Config",
+      );
       await updateChatStatus();
     } catch (e) {
       console.error("Failed to open model selector:", e);

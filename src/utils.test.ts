@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "vitest";
-const assertEquals = (actual: unknown, expected: unknown, _msg?: string) => expect(actual).toEqual(expected);
+const assertEquals = (actual: unknown, expected: unknown, _msg?: string) =>
+  expect(actual).toEqual(expected);
 import "./mocks/syscalls.ts";
 import {
   assembleMessagesWithAttachments,
@@ -11,7 +12,11 @@ import {
   luaLongString,
   parseToolCallsFromContent,
 } from "./utils.ts";
-import { configureSelectedModel, initializeOpenAI, parseDefaultModelString } from "./init.ts";
+import {
+  configureSelectedModel,
+  initializeOpenAI,
+  parseDefaultModelString,
+} from "./init.ts";
 import { postProcessToolCallHtml } from "./widgets.ts";
 import { Attachment, MessageWithAttachments } from "./types.ts";
 import { syscall } from "@silverbulletmd/silverbullet/syscalls";
@@ -131,7 +136,10 @@ test("parseToolCallsFromContent should extract tool calls from content", async (
   assertEquals(result.toolCalls[0].function.name, "read_note");
   assertEquals(result.toolMessages.length, 1);
   assertEquals(result.toolMessages[0].role, "tool");
-  assertEquals(result.toolMessages[0].tool_call_id, "tool_123");
+  assertEquals(
+    (result.toolMessages[0].content[0] as any).toolCallId,
+    "tool_123",
+  );
 });
 
 test("parseToolCallsFromContent should handle content without tool calls", async () => {
@@ -190,9 +198,12 @@ test("cleanMessagesForApi should process assistant messages with tool calls", as
   assertEquals(result.length, 3);
   assertEquals(result[0].role, "user");
   assertEquals(result[1].role, "assistant");
-  assertEquals(result[1].tool_calls?.length, 1);
+  assertEquals(
+    (result[1].content as any[]).filter((p) => p.type === "tool-call").length,
+    1,
+  );
   assertEquals(result[2].role, "tool");
-  assertEquals(result[2].tool_call_id, "tool_123");
+  assertEquals((result[2].content[0] as any).toolCallId, "tool_123");
 });
 
 test("cleanMessagesForApi should pass through messages without tool calls", async () => {
@@ -237,8 +248,7 @@ test("postProcessToolCallHtml should pass through HTML without tool calls", () =
 
 test("postProcessToolCallHtml should handle <br> tags in JSON (SilverBullet escaping)", () => {
   // SilverBullet's htmlEscape converts \n to <br>, simulate that
-  const toolData =
-    `{<br>"id": "tool_1",<br>"name": "read_note",<br>"args": { "page": "Test" },<br>"result": "Content",<br>"success": true<br>}`;
+  const toolData = `{<br>"id": "tool_1",<br>"name": "read_note",<br>"args": { "page": "Test" },<br>"result": "Content",<br>"success": true<br>}`;
   const html = `<p>Some text</p><pre data-lang="toolcall">${toolData}</pre><p>More text</p>`;
 
   const result = postProcessToolCallHtml(html);
@@ -297,14 +307,17 @@ test("assembleMessagesWithAttachments should insert attachments before their sou
   assertEquals(result.length, 3);
   assertEquals(result[0].role, "system");
   assertEquals(result[1].role, "user");
-  assertEquals(result[1].content.includes("PageA"), true);
-  assertEquals(result[1].content.includes("<context"), true);
+  assertEquals((result[1].content as string).includes("PageA"), true);
+  assertEquals((result[1].content as string).includes("<context"), true);
   assertEquals(result[2].role, "user");
   assertEquals(result[2].content, "Check [[PageA]]");
 });
 
 test("assembleMessagesWithAttachments renders a binary attachment as its own ordered carrier message", () => {
-  const systemMessage: ChatMessage = { role: "system", content: "You are helpful." };
+  const systemMessage: ChatMessage = {
+    role: "system",
+    content: "You are helpful.",
+  };
   const textAttachment: Attachment = {
     name: "PageA",
     content: "Page A content",
@@ -331,9 +344,15 @@ test("assembleMessagesWithAttachments renders a binary attachment as its own ord
   // [system, text <context> msg, binary carrier msg, real user msg]
   expect(result.length).toEqual(4);
   expect(result[1].content).toContain("<context");
-  expect(result[1].attachments).toBeUndefined();
-  expect(result[2].content).toEqual('Attached image: cat.png "a sleeping cat"');
-  expect(result[2].attachments).toEqual([imageAttachment]);
+  expect(result[2].content).toEqual([
+    { type: "text", text: 'Attached image: cat.png "a sleeping cat"' },
+    {
+      type: "file",
+      data: imageAttachment.binary!.url,
+      mediaType: "image/png",
+      filename: "cat.png",
+    },
+  ]);
   expect(result[3].content).toEqual("Describe ![[cat.png]] and [[PageA]]");
 });
 
@@ -360,7 +379,7 @@ test("assembleMessagesWithAttachments should place agent attachments after syste
   assertEquals(result.length, 3);
   assertEquals(result[0].role, "system");
   assertEquals(result[1].role, "user");
-  assertEquals(result[1].content.includes("AgentContext"), true);
+  assertEquals((result[1].content as string).includes("AgentContext"), true);
   assertEquals(result[2].role, "user");
   assertEquals(result[2].content, "Hello");
 });
@@ -402,10 +421,10 @@ test("assembleMessagesWithAttachments should preserve cache-friendly ordering", 
   // Verify order: system, A-context, user1, assistant1, B-context, user2
   assertEquals(result.length, 6);
   assertEquals(result[0].role, "system");
-  assertEquals(result[1].content.includes("PageA"), true); // A-context
+  assertEquals((result[1].content as string).includes("PageA"), true); // A-context
   assertEquals(result[2].content, "Check [[PageA]]"); // user1
   assertEquals(result[3].content, "Here is PageA info"); // assistant1
-  assertEquals(result[4].content.includes("PageB"), true); // B-context
+  assertEquals((result[4].content as string).includes("PageB"), true); // B-context
   assertEquals(result[5].content, "Now check [[PageB]]"); // user2
 });
 
@@ -429,8 +448,8 @@ test("assembleMessagesWithAttachments should handle multiple attachments per mes
 
   assertEquals(result.length, 4);
   assertEquals(result[0].role, "system");
-  assertEquals(result[1].content.includes("Page1"), true);
-  assertEquals(result[2].content.includes("Page2"), true);
+  assertEquals((result[1].content as string).includes("Page1"), true);
+  assertEquals((result[2].content as string).includes("Page2"), true);
   assertEquals(result[3].content, "Check [[Page1]] and [[Page2]]");
 });
 
@@ -499,7 +518,13 @@ test("jsToLuaLiteral should convert arrays", () => {
 });
 
 test("jsToLuaLiteral should convert nested arrays", () => {
-  assertEquals(jsToLuaLiteral([[1, 2], [3, 4]]), "{{1, 2}, {3, 4}}");
+  assertEquals(
+    jsToLuaLiteral([
+      [1, 2],
+      [3, 4],
+    ]),
+    "{{1, 2}, {3, 4}}",
+  );
 });
 
 test("jsToLuaLiteral should convert objects with valid identifier keys", () => {
@@ -516,7 +541,10 @@ test("jsToLuaLiteral should use bracket notation for non-identifier keys", () =>
 
 test("jsToLuaLiteral should handle nested objects", () => {
   assertEquals(jsToLuaLiteral({ a: { b: 1 } }), "{a={b=1}}");
-  assertEquals(jsToLuaLiteral({ page: { name: "Test", ref: "Test" } }), '{page={name="Test", ref="Test"}}');
+  assertEquals(
+    jsToLuaLiteral({ page: { name: "Test", ref: "Test" } }),
+    '{page={name="Test", ref="Test"}}',
+  );
 });
 
 test("jsToLuaLiteral should handle mixed arrays and objects", () => {
@@ -535,7 +563,10 @@ test("jsToLuaLiteral should handle complex nested structures", () => {
     selectedText: null,
   };
   const result = jsToLuaLiteral(complex);
-  assertEquals(result, '{page={name="work/AICompany", size=117}, currentLineNumber=7, selectedText=nil}');
+  assertEquals(
+    result,
+    '{page={name="work/AICompany", size=117}, currentLineNumber=7, selectedText=nil}',
+  );
 });
 
 beforeEach(async () => {
@@ -602,12 +633,14 @@ test("enrichChatMessages does not attach files by default", async () => {
 test("enrichChatMessages attaches images as unified attachments when enabled", async () => {
   await setupVisionTest({ attachImages: true });
   const { messagesWithAttachments } = await enrichChatMessages(imageMessages);
-  expect(messagesWithAttachments[0].attachments).toEqual([{
-    name: "img.png",
-    type: "image",
-    binary: { mimeType: "image/png", url: "data:image/png;base64,AQID" },
-    alt: "alt",
-  }]);
+  expect(messagesWithAttachments[0].attachments).toEqual([
+    {
+      name: "img.png",
+      type: "image",
+      binary: { mimeType: "image/png", url: "data:image/png;base64,AQID" },
+      alt: "alt",
+    },
+  ]);
   expect(messagesWithAttachments[1].attachments).toEqual([]);
 });
 

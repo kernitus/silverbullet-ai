@@ -3,11 +3,10 @@ import {
   streamText,
   isStepCount,
   type ModelMessage,
-  type StepResult,
   type ToolSet,
 } from "ai";
 import type { ProviderInterface } from "./interfaces/Provider.ts";
-import { toModelMessages, toSDKTools, toUsage } from "./providers/messages.ts";
+import { toSDKTools, toUsage } from "./providers/messages.ts";
 import {
   asset,
   clientStore,
@@ -85,6 +84,7 @@ type ApprovalResult = {
 };
 
 type PendingApproval = {
+  submitting?: boolean;
   resolve: (result: ApprovalResult) => void;
   toolName: string;
   args: Record<string, unknown>;
@@ -93,17 +93,15 @@ type PendingApproval = {
 const pendingApprovals = new Map<string, PendingApproval>();
 
 type PendingWrite = {
+  submitting?: boolean;
   resolve: (result: ApprovalResult) => void;
   page: string;
   newContent: string;
-  currentContent: string;
+  currentContent: string | null;
   diff: DiffLine[];
 };
 
 const pendingWrites = new Map<string, PendingWrite>();
-
-// Set while callTool runs so write tools skip the (headless-incompatible) approval modal.
-let directToolCall = false;
 
 export type ToolExecutionResult = {
   success: boolean;
@@ -269,8 +267,7 @@ export async function discoverAllTools(): Promise<
 }
 
 /**
- * Lua-callable: run a single tool by name and return its result. Shows no approval
- * modal, matching how Lua tool handlers run when called directly.
+ * Lua-callable: run a single tool using the configured approval policy.
  *
  * @example From Space Lua:
  * ```lua
@@ -285,12 +282,20 @@ export async function callTool(
 ): Promise<ToolExecutionResult> {
   await initIfNeeded();
   const luaTools = await discoverAllTools();
-  directToolCall = true;
-  try {
-    return await executeTool(toolName, args ?? {}, luaTools);
-  } finally {
-    directToolCall = false;
+  if (
+    toolRequiresApproval(
+      luaTools.get(toolName),
+      aiSettings?.chat?.skipToolApproval,
+    )
+  ) {
+    const approval = await requestToolApproval(toolName, args ?? {});
+    if (!approval.approved)
+      return {
+        success: false,
+        error: approval.feedback || "Tool rejected by user",
+      };
   }
+  return await executeTool(toolName, args ?? {}, luaTools);
 }
 
 /**
@@ -474,6 +479,12 @@ function requestToolApproval(
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<ApprovalResult> {
+  if (pendingApprovals.size || pendingWrites.size) {
+    return Promise.resolve({
+      approved: false,
+      feedback: "Another approval is pending. Retry after it is resolved.",
+    });
+  }
   const approvalId = `approval_${Date.now()}_${crypto.randomUUID()}`;
 
   return new Promise((resolve, reject) => {
@@ -515,24 +526,40 @@ export async function submitApproval(
   approved: boolean,
   feedback?: string | null,
 ): Promise<void> {
-  if (type === "tool") {
-    const pending = pendingApprovals.get(id);
-    if (pending) {
-      pendingApprovals.delete(id);
-      editor.hidePanel("modal");
-      pending.resolve({ approved, feedback });
-    }
-  } else {
-    const pending = pendingWrites.get(id);
-    if (pending) {
-      pendingWrites.delete(id);
-      editor.hidePanel("modal");
-      if (approved) {
-        await space.writePage(pending.page, pending.newContent);
+  const pending =
+    type === "tool" ? pendingApprovals.get(id) : pendingWrites.get(id);
+  if (!pending || pending.submitting) return;
+  pending.submitting = true;
+  try {
+    await editor.hidePanel("modal");
+    if (type === "write" && approved) {
+      const write = pending as PendingWrite;
+      const current = await readWriteSnapshot(write.page);
+      if (current !== write.currentContent) {
+        pending.resolve({
+          approved: false,
+          feedback:
+            "Page changed since the preview. Read it again and propose a new edit.",
+        });
+        return;
       }
-      pending.resolve({ approved, feedback });
+      await space.writePage(write.page, write.newContent);
     }
+    pending.resolve({ approved, feedback });
+  } catch (error) {
+    pending.resolve({
+      approved: false,
+      feedback: `Approval failed: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  } finally {
+    if (type === "tool") pendingApprovals.delete(id);
+    else pendingWrites.delete(id);
   }
+}
+
+// A failed read must never be interpreted as permission to create a page.
+async function readWriteSnapshot(page: string): Promise<string | null> {
+  return (await space.pageExists(page)) ? await space.readPage(page) : null;
 }
 
 /**
@@ -543,8 +570,7 @@ export async function requestWriteApproval(
   page: string,
   newContent: string,
 ): Promise<{ success: boolean; error?: string }> {
-  // Skip approval if configured, or when called via callTool (no modal to approve in)
-  if (directToolCall || aiSettings?.chat?.skipToolApproval) {
+  if (aiSettings?.chat?.skipToolApproval) {
     await space.writePage(page, newContent);
     return { success: true };
   }
@@ -552,16 +578,16 @@ export async function requestWriteApproval(
   const writeId = `write_${Date.now()}_${crypto.randomUUID()}`;
 
   // Read current content and compute diff
-  let currentContent = "";
-  let isNewPage = false;
-  try {
-    currentContent = await space.readPage(page);
-  } catch {
-    isNewPage = true;
+  const currentContent = await readWriteSnapshot(page);
+  const isNewPage = currentContent === null;
+  const diff = computeSimpleDiff(currentContent ?? "", newContent);
+
+  if (pendingApprovals.size || pendingWrites.size) {
+    return {
+      success: false,
+      error: "Another approval is pending. Retry after it is resolved.",
+    };
   }
-
-  const diff = computeSimpleDiff(currentContent, newContent);
-
   return new Promise((resolve, reject) => {
     pendingWrites.set(writeId, {
       resolve: (result) => {
@@ -769,9 +795,14 @@ async function processToolCalls(
       emitToolCall(toolName, args, parseErrorResult);
       toolMessages.push({
         role: "tool",
-        tool_call_id: toolCall.id,
-        name: toolName,
-        content: `Error: ${parseErrorResult.error}`,
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: toolCall.id,
+            toolName,
+            output: { type: "text", value: `Error: ${parseErrorResult.error}` },
+          },
+        ],
       });
       continue;
     }
@@ -798,9 +829,14 @@ async function processToolCalls(
         emitToolCall(toolName, args, rejectedResult);
         toolMessages.push({
           role: "tool",
-          tool_call_id: toolCall.id,
-          name: toolName,
-          content: rejectedContent,
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: toolCall.id,
+              toolName,
+              output: { type: "text", value: rejectedContent },
+            },
+          ],
         });
         continue;
       }
@@ -838,9 +874,14 @@ async function processToolCalls(
     // LLM message uses full result
     toolMessages.push({
       role: "tool",
-      tool_call_id: toolCall.id,
-      name: toolName,
-      content: fullResult,
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: toolCall.id,
+          toolName,
+          output: { type: "text", value: fullResult },
+        },
+      ],
     });
 
     if (result.attachPaths) attachPaths.push(...result.attachPaths);
@@ -910,7 +951,10 @@ async function runSDKChat(
       ? await provider.streamChat({ ...options, onComplete: undefined })
       : await provider.chat(messages);
     return {
-      messages,
+      messages: [
+        ...messages,
+        { role: "assistant", content: response.content ?? "" },
+      ],
       finalResponse: response.content ?? "",
       finalReasoning: response.reasoning,
       toolCallsText: "",
@@ -919,7 +963,7 @@ async function runSDKChat(
   }
   let toolCallsText = "";
   let pendingAttachments: ChatMessage[] = [];
-  const workingMessages = [...messages];
+  const responseMessages: ModelMessage[] = [];
   const sdkTools = toSDKTools(options.tools);
   let executedTools = false;
   for (const [name, definition] of Object.entries(sdkTools)) {
@@ -938,12 +982,17 @@ async function runSDKChat(
       );
       toolCallsText += processed.toolCallsText;
       pendingAttachments.push(...processed.attachmentMessages);
-      return processed.toolMessages[0]?.content ?? "";
+      const result = processed.toolMessages[0];
+      const output =
+        result?.role === "tool" && result.content[0]?.type === "tool-result"
+          ? result.content[0].output
+          : undefined;
+      return output?.type === "text" ? output.value : "";
     };
   }
   const settings = {
     model: provider.languageModel,
-    messages: toModelMessages(messages),
+    messages,
     tools: sdkTools,
     providerOptions: provider.providerOptions,
     maxRetries: 0,
@@ -954,35 +1003,11 @@ async function runSDKChat(
     prepareStep: ({ messages: sdkMessages }: { messages: ModelMessage[] }) => {
       const attachments = pendingAttachments;
       pendingAttachments = [];
-      return { messages: [...sdkMessages, ...toModelMessages(attachments)] };
+      responseMessages.push(...attachments);
+      return { messages: [...sdkMessages, ...attachments] };
     },
-    onStepEnd: (step: StepResult<ToolSet>) => {
-      if (!step.toolCalls.length) return;
-      workingMessages.push({
-        role: "assistant",
-        content: step.text,
-        tool_calls: step.toolCalls.map((call) => ({
-          id: call.toolCallId,
-          type: "function",
-          function: {
-            name: call.toolName,
-            arguments: JSON.stringify(call.input),
-          },
-          providerOptions: call.providerMetadata,
-        })),
-      });
-      workingMessages.push(
-        ...step.toolResults.map((result) => ({
-          role: "tool" as const,
-          name: result.toolName,
-          tool_call_id: result.toolCallId,
-          content:
-            typeof result.output === "string"
-              ? result.output
-              : JSON.stringify(result.output),
-        })),
-      );
-      workingMessages.push(...pendingAttachments);
+    onStepEnd: (step: import("ai").StepResult<ToolSet>) => {
+      responseMessages.push(...step.response.messages);
     },
   };
   const execute = async (tools: ToolSet): Promise<AgenticChatResult> => {
@@ -1015,10 +1040,14 @@ async function runSDKChat(
       const warning =
         "\n\n⚠️ Maximum tool iterations reached. Response may be incomplete.";
       text += warning;
+      responseMessages.push({
+        role: "assistant",
+        content: [{ type: "text", text: warning.trim() }],
+      });
       if (streaming) options.onChunk?.(warning);
     }
     return {
-      messages: workingMessages,
+      messages: [...messages, ...responseMessages, ...pendingAttachments],
       finalResponse: text,
       finalReasoning: reasoning,
       toolCallsText,
@@ -1041,6 +1070,7 @@ async function runSDKChat(
       `Model ${provider.modelName} does not support tools, continuing without them`,
       "info",
     );
+    responseMessages.length = 0;
     return execute({});
   }
 }

@@ -1,4 +1,4 @@
-import type { ToolCallPart } from "ai";
+import type { ModelMessage, ToolCallPart } from "ai";
 export type ProviderOptions = NonNullable<ToolCallPart["providerOptions"]>;
 import { ObjectValue } from "@silverbulletmd/silverbullet/type/index";
 
@@ -124,14 +124,7 @@ export type ToolCall = {
   providerOptions?: ProviderOptions;
 };
 
-export type ChatMessage = {
-  content: string;
-  role: "user" | "assistant" | "system" | "tool";
-  attachments?: Attachment[];
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
-  name?: string;
-};
+export type ChatMessage = ModelMessage;
 
 // Binary attachment kinds, gated independently by model capability.
 export type AttachmentKind = "image" | "document";
@@ -180,7 +173,10 @@ export type LuaToolDefinition = {
   mcpToolName?: string;
   trusted?: boolean;
   // Runs the tool in TS instead of through a Lua handler
-  execute?: (args: Record<string, unknown>, permissions?: PathPermissions) => Promise<ToolExecutionResult>;
+  execute?: (
+    args: Record<string, unknown>,
+    permissions?: PathPermissions,
+  ) => Promise<ToolExecutionResult>;
 };
 
 export type AIAgentTemplate = {

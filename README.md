@@ -70,6 +70,8 @@ Doesn't use the queue
 
 After installing the plug, you can access its features through the command palette. Configuration is done using Space Lua in your `CONFIG` page (or any page with a `space-lua` block).
 
+The assistant panel stores conversations as Vercel AI SDK `ModelMessage` arrays in SilverBullet’s browser client store. Text, tool calls, full tool results, reasoning and provider metadata are retained for subsequent turns. Displayed tool details are separate from the model messages. Legacy panel histories are not imported. Chat on a page remains a Markdown interface.
+
 ### Configuration
 
 SilverBullet v2 uses Space Lua for configuration. Add a `space-lua` block to your `CONFIG` page:

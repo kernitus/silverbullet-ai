@@ -215,9 +215,9 @@ print(r.success, r.result) -- r.error is set when success is false
 - `summary` - (optional) a short summary, if the tool returned one
 - `error` - the error message (when `success` is `false`)
 
-Because the script author explicitly named the tool, `callTool` runs it
-immediately and **does not show the approval modal**, even for untrusted MCP
-tools. Only call tools you intend to run.
+`callTool` follows the configured approval policy, including approval for untrusted MCP tools and diff previews for `ai.writePage`. Direct calls cannot bypass approval for another running tool. Headless scripts must use tools that do not need interactive approval, or an explicitly configured approval policy.
+
+Before an approved edit is written, the page must still match the preview. Conflicting edits and failed writes return errors. SilverBullet does not expose an atomic conditional page write, so a simultaneous external edit between the final check and write remains possible.
 
 To discover what is available — including the namespaced MCP tool names — use
 `silverbullet-ai.listTools`:

@@ -66,7 +66,15 @@ try {
     { waitUntil: "domcontentloaded" },
   );
   await panel.evaluate(() => {
+    const store: Record<string, any> = {};
+    (globalThis as any).testStore = store;
+    (globalThis as any).submittedMessages = [];
     (globalThis as any).syscall = async (name: string, ...args: unknown[]) => {
+      if (name === "clientStore.get") return store[String(args[0])];
+      if (name === "clientStore.set") {
+        store[String(args[0])] = JSON.parse(JSON.stringify(args[1]));
+        return;
+      }
       if (name === "markdown.markdownToHtml") return args[0];
       if (name !== "system.invokeFunction") return undefined;
       switch (args[0]) {
@@ -81,11 +89,52 @@ try {
         case "silverbullet-ai.getPollState":
           return { agentRef: null };
         case "silverbullet-ai.startPanelChat":
+          (globalThis as any).submittedMessages.push(
+            JSON.parse(JSON.stringify(args[1])),
+          );
           return { streamId: "test-stream" };
         case "silverbullet-ai.getPanelChatChunk":
           return {
             chunks: ["Search is available through tools."],
             status: "complete",
+            messages: [
+              { role: "user", content: "Search my notes" },
+              {
+                role: "assistant",
+                content: [
+                  {
+                    type: "reasoning",
+                    text: "Private reasoning",
+                    providerOptions: {
+                      openai: { reasoningEncryptedContent: "encrypted" },
+                    },
+                  },
+                  {
+                    type: "tool-call",
+                    toolCallId: "call-1",
+                    toolName: "search_notes",
+                    input: { query: "notes" },
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                content: [
+                  {
+                    type: "tool-result",
+                    toolCallId: "call-1",
+                    toolName: "search_notes",
+                    output: { type: "text", value: "Full search results" },
+                  },
+                ],
+              },
+              {
+                role: "assistant",
+                content: [
+                  { type: "text", text: "Search is available through tools." },
+                ],
+              },
+            ],
           };
         case "silverbullet-ai.postProcessToolCallHtml":
           return args[1];
@@ -102,10 +151,10 @@ try {
   });
   await panel.locator("#user-input").fill("Find my notes");
   await panel.locator("#send-btn").click();
-  await panel.waitForFunction(
-    () =>
-      document.querySelector(".message.assistant:not(.streaming)")
-        ?.textContent === "Search is available through tools.",
+  await panel.waitForFunction(() =>
+    [...document.querySelectorAll(".message.assistant:not(.streaming)")].some(
+      (element) => element.textContent === "Search is available through tools.",
+    ),
   );
   assert.equal(
     await panel
@@ -113,6 +162,33 @@ try {
       .count(),
     0,
   );
+  await panel.waitForFunction(
+    () =>
+      (globalThis as any).testStore["ai.panelChatHistory.sdk.v1"]?.messages
+        .length === 4,
+  );
+  const saved = await panel.evaluate(
+    () => (globalThis as any).testStore["ai.panelChatHistory.sdk.v1"].messages,
+  );
+  assert.equal(
+    saved[1].content[0].providerOptions.openai.reasoningEncryptedContent,
+    "encrypted",
+  );
+  assert.equal(saved[2].content[0].output.value, "Full search results");
+  assert.equal(
+    await panel.getByText("Private reasoning", { exact: true }).count(),
+    0,
+  );
+  await panel.locator("#user-input").fill("Continue");
+  await panel.locator("#send-btn").click();
+  await panel.waitForFunction(
+    () => (globalThis as any).submittedMessages.length === 2,
+  );
+  const submitted = await panel.evaluate(
+    () => (globalThis as any).submittedMessages[1],
+  );
+  assert.deepEqual(submitted.slice(0, -1), saved);
+  assert.deepEqual(submitted.at(-1), { role: "user", content: "Continue" });
   assert.deepEqual(panelErrors, []);
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",

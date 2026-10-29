@@ -99,9 +99,14 @@ export async function parseToolCallsFromContent(content: string): Promise<{
         // Add tool response message
         toolMessages.push({
           role: "tool",
-          tool_call_id: data.id,
-          name: data.name,
-          content: resultContent,
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: data.id,
+              toolName: data.name,
+              output: { type: "text", value: resultContent },
+            },
+          ],
         });
       }
     } catch {
@@ -127,14 +132,23 @@ export async function cleanMessagesForApi(
 ): Promise<ChatMessage[]> {
   const cleanedMessages: ChatMessage[] = [];
   for (const msg of messages) {
-    if (msg.role === "assistant") {
+    if (msg.role === "assistant" && typeof msg.content === "string") {
       const { strippedContent, toolMessages, toolCalls } =
         await parseToolCallsFromContent(msg.content);
       if (toolCalls.length > 0) {
         cleanedMessages.push({
           ...msg,
-          content: strippedContent,
-          tool_calls: toolCalls,
+          content: [
+            ...(strippedContent
+              ? [{ type: "text" as const, text: strippedContent }]
+              : []),
+            ...toolCalls.map((call) => ({
+              type: "tool-call" as const,
+              toolCallId: call.id,
+              toolName: call.function.name,
+              input: JSON.parse(call.function.arguments),
+            })),
+          ],
         });
         cleanedMessages.push(...toolMessages);
       } else {
@@ -236,7 +250,8 @@ export async function enrichChatMessages(
     if (
       message.role === "assistant" ||
       message.role === "system" ||
-      message.role === "tool"
+      message.role === "tool" ||
+      typeof message.content !== "string"
     ) {
       // Don't enrich assistant, system, or tool messages
       // Tool messages must immediately follow assistant messages with tool_calls per OpenAI API
@@ -379,8 +394,15 @@ export function attachmentMessage(a: Attachment): ChatMessage {
       : `Attached ${a.type}: ${a.name}`;
     return {
       role: "user" as const,
-      content: label,
-      attachments: [a],
+      content: [
+        { type: "text", text: label },
+        {
+          type: "file",
+          data: a.binary.url,
+          mediaType: a.binary.mimeType,
+          filename: a.name,
+        },
+      ],
     };
   }
   return {

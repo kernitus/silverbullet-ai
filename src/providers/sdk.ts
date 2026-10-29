@@ -27,7 +27,7 @@ import {
   googleBaseUrl,
   type ProviderConnection,
 } from "./catalog.ts";
-import { toModelMessages, toSDKTools, toUsage } from "./messages.ts";
+import { toSDKTools, toUsage } from "./messages.ts";
 
 function sdkProvider(connection: ProviderConnection) {
   const c = connection;
@@ -107,7 +107,7 @@ export class SDKProvider extends AbstractProvider {
     this.catalog = new ModelCatalog(connection);
   }
 
-  get providerOptions() {
+  get providerOptions(): import("../types.ts").ProviderOptions | undefined {
     if (this.api === "responses")
       return {
         openai: {
@@ -140,7 +140,7 @@ export class SDKProvider extends AbstractProvider {
   ) {
     return {
       model: this.languageModel,
-      messages: toModelMessages(messages),
+      messages,
       tools: toSDKTools(tools),
       providerOptions: this.providerOptions,
       maxRetries: 0,

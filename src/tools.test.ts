@@ -322,3 +322,93 @@ test("SDK stops at the configured tool step limit", async () => {
   expect(model.doGenerateCalls).toHaveLength(2);
   expect(result.finalResponse).toContain("Maximum tool iterations reached");
 });
+
+test("native multipart history retains attachments and provider metadata", async () => {
+  const model = new MockLanguageModelV3({
+    doGenerate: {
+      content: [{ type: "text", text: "Continued" }],
+      finishReason,
+      usage,
+      warnings: [],
+    },
+  });
+  const history: import("ai").ModelMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Read these" },
+        {
+          type: "file",
+          data: "data:image/png;base64,YQ==",
+          mediaType: "image/png",
+        },
+        {
+          type: "file",
+          data: "data:application/pdf;base64,Yg==",
+          mediaType: "application/pdf",
+          filename: "report.pdf",
+        },
+      ],
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "reasoning",
+          text: "Thinking",
+          providerOptions: { google: { thoughtSignature: "signature" } },
+        },
+        {
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "read_note",
+          input: { page: "Note" },
+          providerOptions: { google: { thoughtSignature: "tool-signature" } },
+        },
+      ],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-1",
+          toolName: "read_note",
+          output: { type: "json", value: { content: "Full note" } },
+        },
+      ],
+    },
+    { role: "user", content: "Continue" },
+  ];
+  const saved = JSON.parse(JSON.stringify(history));
+  const result = await runAgenticChat({
+    messages: saved,
+    provider: await setup(model),
+    tools: [],
+    luaTools: new Map(),
+  });
+  expect(result.messages.slice(0, -1)).toEqual(history);
+  expect(result.messages.at(-1)).toMatchObject({
+    role: "assistant",
+    content: [{ type: "text", text: "Continued" }],
+  });
+  const prompt = model.doGenerateCalls[0].prompt;
+  expect(prompt[0].content).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ type: "file", mediaType: "image/png" }),
+      expect.objectContaining({ type: "file", mediaType: "application/pdf" }),
+    ]),
+  );
+  expect(prompt[1].content).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        type: "reasoning",
+        providerOptions: { google: { thoughtSignature: "signature" } },
+      }),
+      expect.objectContaining({
+        type: "tool-call",
+        providerOptions: { google: { thoughtSignature: "tool-signature" } },
+      }),
+    ]),
+  );
+});

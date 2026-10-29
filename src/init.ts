@@ -24,7 +24,6 @@ import { inferProviderType } from "./model-discovery.ts";
 import type {
   AISettings,
   AttachmentKind,
-  ChatMessage,
   ChatSettings,
   EmbeddingModelConfig,
   ImageModelConfig,
@@ -38,7 +37,7 @@ import { MockProvider } from "./mocks/mockproviders.ts";
 import { MockEmbeddingProvider } from "./mocks/mockproviders.ts";
 export let apiKey: string;
 export let aiSettings: AISettings;
-export let chatSystemPrompt: ChatMessage;
+export let chatSystemPrompt: import("ai").SystemModelMessage;
 
 export let currentAIProvider: ProviderInterface;
 export let currentImageProvider: ImageProviderInterface;
