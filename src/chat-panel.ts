@@ -1,8 +1,11 @@
+import { experimental_createSteering } from "ai";
 import { currentPageContext } from "./page-context.ts";
 import { filterCapabilities, isRestricted } from "./capabilities.ts";
 import { interruptedMessages, type RunCheckpoint } from "./execution.ts";
 import {
   CHAT_HISTORY_KEY,
+  savePanelInstruction,
+  type RunInstruction,
   beginPanelTurn,
   savePanelCompaction,
   savePanelCheckpoint,
@@ -72,6 +75,8 @@ interface StreamBuffer {
   controller: AbortController;
   chatId: string;
   checkpoint: RunCheckpoint;
+  steering?: ReturnType<typeof experimental_createSteering>;
+  instructions: RunInstruction[];
   error?: string;
   statusMessage?: string;
   messages?: ChatMessage[];
@@ -269,6 +274,10 @@ export async function startPanelChat(
       controller,
       chatId,
       checkpoint: { messages },
+      steering: currentAIProvider.languageModel
+        ? experimental_createSteering()
+        : undefined,
+      instructions: [],
     });
 
     let luaTools = toolsEnabled()
@@ -411,27 +420,31 @@ export async function startPanelChat(
       .catch(async (error: Error) => {
         const buffer = streamBuffers.get(runningId);
         if (buffer) {
-          buffer.status = buffer.controller.signal.aborted
+          const terminalStatus = buffer.controller.signal.aborted
             ? "cancelled"
             : "error";
           buffer.error =
-            buffer.status === "cancelled"
+            terminalStatus === "cancelled"
               ? "Stopped. Completed work has been kept."
               : error.message;
           buffer.messages = interruptedMessages(buffer.checkpoint);
+          await settlePanelInstructions(buffer, runningId);
           await savePanelCheckpoint(
             buffer.chatId,
             runningId,
             { messages: buffer.messages },
-            buffer.status,
+            terminalStatus,
             buffer.error,
           );
+          buffer.status = terminalStatus;
         }
       })
       .catch((error) => {
         const buffer = streamBuffers.get(runningId);
-        if (buffer)
+        if (buffer) {
+          buffer.status = "error";
           buffer.error = `Could not save recovery state: ${error instanceof Error ? error.message : String(error)}`;
+        }
       });
 
     return { streamId };
@@ -469,6 +482,10 @@ async function runToolLoop(
     runId: streamId,
     abortSignal: buffer.controller.signal,
     enableResearch,
+    steering: buffer.steering,
+    onProgress: (message) => {
+      buffer.statusMessage = message;
+    },
     compaction,
     onCompaction: (state) =>
       savePanelCompaction(buffer.chatId, streamId, state),
@@ -490,6 +507,7 @@ async function runToolLoop(
     permissions,
   });
 
+  await settlePanelInstructions(buffer, streamId);
   buffer.messages = result.messages.slice(transientPrefixLength);
   buffer.checkpoint = { messages: buffer.messages };
   await savePanelCheckpoint(
@@ -499,6 +517,76 @@ async function runToolLoop(
     "complete",
   );
   buffer.status = "complete";
+}
+
+async function settlePanelInstructions(
+  buffer: StreamBuffer,
+  streamId: string,
+): Promise<void> {
+  for (const instruction of buffer.instructions) {
+    if (instruction.status !== "queued") continue;
+    instruction.status = "not-delivered";
+    instruction.reason = "Run ended before delivery was confirmed";
+    await savePanelInstruction(buffer.chatId, streamId, instruction);
+  }
+}
+
+export async function steerPanelChat(
+  streamId: string,
+  chatId: string,
+  text: string,
+): Promise<{ id?: string; error?: string }> {
+  const buffer = streamBuffers.get(streamId);
+  if (
+    !buffer ||
+    buffer.chatId !== chatId ||
+    buffer.status !== "streaming" ||
+    buffer.controller.signal.aborted
+  )
+    return {
+      error: "This run has ended. Send your instruction as a new turn.",
+    };
+  if (!buffer.steering)
+    return { error: "This provider does not support active instructions." };
+  if (typeof text !== "string" || !text.trim() || text.length > 4000)
+    return { error: "Instructions must contain 1 to 4000 characters." };
+  if (buffer.instructions.length >= 20)
+    return {
+      error: "This run has reached its limit of 20 active instructions.",
+    };
+  const instruction: RunInstruction = {
+    id: crypto.randomUUID(),
+    text: text.trim(),
+    status: "queued",
+  };
+  buffer.instructions.push(instruction);
+  try {
+    if (!(await savePanelInstruction(chatId, streamId, instruction)))
+      throw new Error("This conversation has ended.");
+    if (buffer.status !== "streaming" || buffer.controller.signal.aborted) {
+      instruction.status = "not-delivered";
+      instruction.reason = "Run ended before the instruction could be queued";
+      await savePanelInstruction(chatId, streamId, instruction);
+      return { error: instruction.reason };
+    }
+    void buffer.steering
+      .steer(instruction.text, { id: instruction.id })
+      .then(async (outcome) => {
+        instruction.status = outcome.type;
+        if (outcome.type === "not-delivered")
+          instruction.reason = outcome.reason;
+        await savePanelInstruction(chatId, streamId, instruction);
+      })
+      .catch((error) => {
+        buffer.statusMessage = `Could not save instruction delivery status: ${String(error)}`;
+        buffer.controller.abort(error);
+      });
+    return { id: instruction.id };
+  } catch (error) {
+    instruction.status = "not-delivered";
+    instruction.reason = String(error);
+    return { error: `Could not queue instruction: ${String(error)}` };
+  }
 }
 
 export async function cancelPanelChat(streamId: string): Promise<void> {
@@ -533,6 +621,7 @@ export function getPanelChatChunk(streamId: string): {
   error?: string;
   statusMessage?: string;
   messages?: ChatMessage[];
+  instructions?: RunInstruction[];
 } {
   const buffer = streamBuffers.get(streamId);
 
@@ -557,6 +646,7 @@ export function getPanelChatChunk(streamId: string): {
     error: buffer.error,
     statusMessage,
     messages: buffer.messages,
+    instructions: buffer.instructions,
   };
 }
 

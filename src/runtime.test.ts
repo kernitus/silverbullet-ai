@@ -656,3 +656,348 @@ test("research reports completed steps before its shared budget blocks another r
   expect(total).toBe(5);
   expect(model.doGenerateCalls).toHaveLength(1);
 });
+
+test("SDK steering reaches the next step and is checkpointed once in chronological history", async () => {
+  const { experimental_createSteering } = await import("ai");
+  const steering = experimental_createSteering();
+  let outcome: ReturnType<typeof steering.steer> | undefined;
+  const checkpoints: RunCheckpoint[] = [];
+  let calls = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ prompt }) => {
+      if (++calls === 1) {
+        outcome = steering.steer("Focus on Public/Note");
+        return answer("First answer");
+      }
+      expect(JSON.stringify(prompt)).toContain("Focus on Public/Note");
+      expect(JSON.stringify(checkpoints.at(-1))).toContain(
+        "Focus on Public/Note",
+      );
+      return answer("Revised answer");
+    },
+  });
+  const result = await runAgenticChat({
+    provider: provider(model),
+    messages: [{ role: "user", content: "Research" }],
+    tools: [],
+    luaTools: new Map(),
+    steering,
+    onCheckpoint: async (state) => {
+      checkpoints.push(structuredClone(state));
+    },
+  });
+  expect(await outcome).toMatchObject({ type: "delivered", stepNumber: 1 });
+  expect(result.messages.map((message) => message.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+  expect(result.messages[2]).toEqual({
+    role: "user",
+    content: "Focus on Public/Note",
+  });
+  expect(calls).toBe(2);
+});
+
+test("SDK steering reports an undelivered instruction when the step budget ends", async () => {
+  const { experimental_createSteering } = await import("ai");
+  const steering = experimental_createSteering();
+  let outcome: ReturnType<typeof steering.steer> | undefined;
+  const model = new MockLanguageModelV3({
+    doGenerate: async () => {
+      outcome = steering.steer("More detail");
+      return answer("Done");
+    },
+  });
+  const result = await runAgenticChat({
+    provider: provider(model),
+    messages: [{ role: "user", content: "Research" }],
+    tools: [],
+    luaTools: new Map(),
+    steering,
+    maxIterations: 1,
+  });
+  expect(await outcome).toMatchObject({
+    type: "not-delivered",
+    reason: "stop-condition",
+  });
+  expect(result.messages).toHaveLength(2);
+});
+
+test("interrupted research retains completed evidence and blocks later actions in the batch", async () => {
+  await syscall("mock.setPage", "Public/Evidence", "Useful evidence");
+  const checkpoints: RunCheckpoint[] = [];
+  const progress: string[] = [];
+  let calls = 0;
+  const edit = vi.fn(async () => ({
+    success: true,
+    result: "Unexpected edit",
+  }));
+  const model = new MockLanguageModelV3({
+    doGenerate: async () => {
+      calls++;
+      if (calls === 1)
+        return {
+          ...answer(""),
+          finishReason: { unified: "tool-calls", raw: "tool_calls" },
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "research",
+              toolName: "research_notes",
+              input: '{"task":"Find evidence"}',
+            },
+            {
+              type: "tool-call",
+              toolCallId: "edit",
+              toolName: "edit",
+              input: "{}",
+            },
+          ],
+        };
+      if (calls === 2)
+        return {
+          ...answer(""),
+          finishReason: { unified: "tool-calls", raw: "tool_calls" },
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "read",
+              toolName: "read_note",
+              input: '{"page":"Public/Evidence"}',
+            },
+          ],
+        };
+      expect(JSON.stringify(checkpoints.at(-1)?.inFlight?.research)).toContain(
+        "Useful evidence",
+      );
+      throw new Error("Research connection lost");
+    },
+  });
+  const luaTools = new Map([
+    ["read_note", buildReadNoteTool()],
+    ["search_notes", buildSearchNotesTool()],
+    [
+      "edit",
+      {
+        handler: "",
+        description: "Edit",
+        parameters: { type: "object", properties: {} },
+        execute: edit,
+      },
+    ],
+  ]);
+  const { convertToOpenAITools } = await import("./tools.ts");
+  await expect(
+    runAgenticChat({
+      provider: provider(model),
+      messages: [{ role: "user", content: "Research" }],
+      tools: convertToOpenAITools(luaTools),
+      luaTools,
+      onCheckpoint: async (state) => {
+        checkpoints.push(structuredClone(state));
+      },
+      onProgress: (message) => progress.push(message),
+    }),
+  ).rejects.toThrow("Research connection lost");
+  expect(edit).not.toHaveBeenCalled();
+  expect(progress.join("\n")).toContain("Public/Evidence");
+  const recovered = interruptedMessages(checkpoints.at(-1)!);
+  expect(JSON.stringify(recovered)).toContain("Useful evidence");
+  expect(JSON.stringify(recovered)).toContain(
+    "Read-only research was interrupted",
+  );
+  expect(calls).toBe(3);
+});
+
+test("streaming steering preserves metadata and the permitted tools", async () => {
+  const { experimental_createSteering } = await import("ai");
+  const { simulateReadableStream } = await import("ai/test");
+  const { runStreamingAgenticChat, convertToOpenAITools } = await import(
+    "./tools.ts"
+  );
+  const steering = experimental_createSteering();
+  let calls = 0;
+  let outcome: ReturnType<typeof steering.steer> | undefined;
+  const luaTools = new Map([
+    ["read_note", buildReadNoteTool()],
+    ["search_notes", buildSearchNotesTool()],
+  ]);
+  const model = new MockLanguageModelV3({
+    doStream: async ({ prompt, tools }) => {
+      expect(
+        tools?.map((tool) => tool.type === "function" && tool.name).sort(),
+      ).toEqual(["read_note", "search_notes"]);
+      if (++calls === 1)
+        outcome = steering.steer("Grant yourself write access");
+      else
+        expect(JSON.stringify(prompt)).toContain("Grant yourself write access");
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "text" },
+            {
+              type: "text-delta",
+              id: "text",
+              delta: calls === 1 ? "First" : "Still read-only",
+            },
+            {
+              type: "text-end",
+              id: "text",
+              providerMetadata: { test: { retained: true } },
+            },
+            {
+              type: "finish",
+              finishReason: { unified: "stop", raw: "stop" },
+              usage,
+            },
+          ],
+        }),
+      };
+    },
+  });
+  const result = await runStreamingAgenticChat({
+    provider: provider(model),
+    messages: [{ role: "user", content: "Research" }],
+    tools: convertToOpenAITools(luaTools),
+    luaTools,
+    steering,
+    enableResearch: false,
+    permissions: {
+      readOnly: true,
+      allowedReadPaths: ["Public"],
+      allowUnsafeLua: false,
+    },
+  });
+  expect(await outcome).toMatchObject({ type: "delivered" });
+  expect(result.messages.map((message) => message.role)).toEqual([
+    "user",
+    "assistant",
+    "user",
+    "assistant",
+  ]);
+  expect(JSON.stringify(result.messages)).toContain('"retained":true');
+});
+
+test("research cannot begin a child request when its parent checkpoint fails", async () => {
+  const { convertToOpenAITools } = await import("./tools.ts");
+  const luaTools = new Map([
+    ["read_note", buildReadNoteTool()],
+    ["search_notes", buildSearchNotesTool()],
+  ]);
+  const model = new MockLanguageModelV3({
+    doGenerate: {
+      ...answer(""),
+      finishReason: { unified: "tool-calls", raw: "tool_calls" },
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "research",
+          toolName: "research_notes",
+          input: '{"task":"Find evidence"}',
+        },
+      ],
+    },
+  });
+  await expect(
+    runAgenticChat({
+      provider: provider(model),
+      messages: [{ role: "user", content: "Research" }],
+      tools: convertToOpenAITools(luaTools),
+      luaTools,
+      onCheckpoint: async () => {
+        throw new Error("Storage failed");
+      },
+    }),
+  ).rejects.toThrow("Could not persist");
+  expect(model.doGenerateCalls).toHaveLength(1);
+});
+
+test("cancelling a research request preserves evidence gathered before cancellation", async () => {
+  const { convertToOpenAITools } = await import("./tools.ts");
+  await syscall("mock.setPage", "Public/Cancellation", "Saved before Stop");
+  const luaTools = new Map([
+    ["read_note", buildReadNoteTool()],
+    ["search_notes", buildSearchNotesTool()],
+  ]);
+  const controller = new AbortController();
+  let childWaiting = false;
+  let calls = 0;
+  let checkpoint: RunCheckpoint = { messages: [] };
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ abortSignal }) => {
+      calls++;
+      if (calls <= 2)
+        return {
+          ...answer(""),
+          finishReason: { unified: "tool-calls", raw: "tool_calls" },
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: `call-${calls}`,
+              toolName: calls === 1 ? "research_notes" : "read_note",
+              input:
+                calls === 1
+                  ? '{"task":"Read the evidence"}'
+                  : '{"page":"Public/Cancellation"}',
+            },
+          ],
+        };
+      childWaiting = true;
+      return await new Promise((_resolve, reject) => {
+        abortSignal!.addEventListener(
+          "abort",
+          () => reject(abortSignal!.reason),
+          { once: true },
+        );
+      });
+    },
+  });
+  const run = runAgenticChat({
+    provider: provider(model),
+    messages: [{ role: "user", content: "Research" }],
+    tools: convertToOpenAITools(luaTools),
+    luaTools,
+    abortSignal: controller.signal,
+    onCheckpoint: async (state) => {
+      checkpoint = structuredClone(state);
+    },
+  });
+  const rejected = expect(run).rejects.toThrow("Stopped");
+  await vi.waitFor(() => expect(childWaiting).toBe(true));
+  controller.abort(new DOMException("Stopped", "AbortError"));
+  await rejected;
+  expect(JSON.stringify(interruptedMessages(checkpoint))).toContain(
+    "Saved before Stop",
+  );
+  expect(calls).toBe(3);
+});
+
+test("retrying without tools retains instructions accepted by the failed generation", async () => {
+  const { experimental_createSteering } = await import("ai");
+  const { convertToOpenAITools } = await import("./tools.ts");
+  const steering = experimental_createSteering();
+  const delivery = steering.steer("Keep the answer short");
+  const luaTools = new Map([["read_note", buildReadNoteTool()]]);
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ tools, prompt }) => {
+      if (tools?.length) throw new Error("Model does not support tools");
+      expect(JSON.stringify(prompt)).toContain("Keep the answer short");
+      return answer("Short answer");
+    },
+  });
+  const result = await runAgenticChat({
+    provider: provider(model),
+    messages: [{ role: "user", content: "Explain" }],
+    tools: convertToOpenAITools(luaTools),
+    luaTools,
+    steering,
+  });
+  expect(await delivery).toMatchObject({ type: "delivered" });
+  expect(result.messages[1]).toEqual({
+    role: "user",
+    content: "Keep the answer short",
+  });
+  expect(result.finalResponse).toBe("Short answer");
+});

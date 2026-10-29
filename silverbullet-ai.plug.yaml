@@ -156,6 +156,8 @@ functions:
       mac: "Cmd-Shift-a"
   startPanelChat:
     path: src/chat-panel.ts:startPanelChat
+  steerPanelChat:
+    path: src/chat-panel.ts:steerPanelChat
   cancelPanelChat:
     path: src/chat-panel.ts:cancelPanelChat
   getPanelChatHistory:

@@ -50,6 +50,7 @@ try {
   );
   assert.equal(manifest.name, "silverbullet-ai");
   assert.ok(manifest.functions.chat);
+  assert.ok(manifest.functions.steerPanelChat);
   assert.ok(manifest.functions.streamChatOnPage);
   console.log(
     `SilverBullet worker loaded: ${Object.keys(manifest.functions).length} functions`,
@@ -83,6 +84,16 @@ try {
         case "silverbullet-ai.resetPanelChatHistory":
           store["ai.panelChatHistory.sdk.v1"] = { id: args[1], messages: [] };
           return;
+        case "silverbullet-ai.steerPanelChat": {
+          if ((globalThis as any).rejectInstruction)
+            return { error: "Instruction rejected for testing" };
+          (globalThis as any).instruction = {
+            id: "instruction",
+            text: args[3],
+            status: "queued",
+          };
+          return { id: "instruction" };
+        }
         case "silverbullet-ai.cancelPanelChat":
           (globalThis as any).stopCalled = true;
           return;
@@ -112,10 +123,26 @@ try {
               ? {
                   chunks: [],
                   status: "cancelled",
+                  instructions: (globalThis as any).instruction
+                    ? [
+                        {
+                          ...(globalThis as any).instruction,
+                          status: "not-delivered",
+                          reason: "aborted",
+                        },
+                      ]
+                    : [],
                   error: "Stopped. Completed work has been kept.",
                   messages: store["ai.panelChatHistory.sdk.v1"].messages,
                 }
-              : { chunks: [], status: "streaming" };
+              : {
+                  chunks: [],
+                  status: "streaming",
+                  statusMessage: "Research: read_note Public/Notes",
+                  instructions: (globalThis as any).instruction
+                    ? [(globalThis as any).instruction]
+                    : [],
+                };
           const result = {
             chunks: ["Search is available through tools."],
             status: "complete",
@@ -228,7 +255,38 @@ try {
   });
   await panel.locator("#user-input").fill("Research a large topic");
   await panel.locator("#send-btn").click();
+  await panel.locator("#user-input").fill("Focus on Public/Notes");
+  await panel.locator("#send-btn").click();
+  await panel.waitForFunction(
+    () => (globalThis as any).instruction?.text === "Focus on Public/Notes",
+  );
+  assert.equal(await panel.locator("#attach-page").isDisabled(), true);
+  await panel.waitForFunction(() =>
+    document
+      .getElementById("run-progress")
+      ?.textContent?.includes("Public/Notes"),
+  );
+  await panel.waitForFunction(() =>
+    document
+      .getElementById("run-instructions")
+      ?.textContent?.includes("Queued for the next step"),
+  );
+  await panel.evaluate(() => {
+    (globalThis as any).rejectInstruction = true;
+  });
+  await panel.locator("#user-input").fill("Keep this draft");
+  await panel.locator("#send-btn").click();
+  await panel.waitForFunction(() =>
+    document
+      .getElementById("run-instructions")
+      ?.textContent?.includes("Instruction rejected for testing"),
+  );
+  assert.equal(
+    await panel.locator("#user-input").inputValue(),
+    "Keep this draft",
+  );
   await panel.locator("#stop-btn").click();
+  await panel.locator("#stop-btn").waitFor({ state: "hidden" });
   await panel.waitForFunction(
     () => !(document.getElementById("send-btn") as HTMLButtonElement).disabled,
   );
@@ -237,7 +295,15 @@ try {
     true,
   );
   assert.equal(await panel.locator("#stop-btn").isVisible(), false);
-  assert.equal(await panel.locator("#user-input").inputValue(), "");
+  assert.equal(
+    await panel.locator("#user-input").inputValue(),
+    "Keep this draft",
+  );
+  assert.match(
+    await panel.locator("#run-instructions").innerText(),
+    /Not delivered/,
+  );
+  assert.equal(await panel.locator("#attach-page").isDisabled(), false);
   assert.deepEqual(panelErrors, []);
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",

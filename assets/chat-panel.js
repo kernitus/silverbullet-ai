@@ -61,6 +61,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   let chatData = { id: null, messages: [] };
   let currentStreamId = null;
   let isStreaming = false;
+  let instructionError = "";
 
   function formatNumber(n) {
     return n.toLocaleString();
@@ -281,6 +282,31 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     items[newIndex]?.scrollIntoView({ block: "nearest" });
   }
 
+  function renderInstructions(instructions = []) {
+    const element = document.getElementById("run-instructions");
+    element.hidden = instructions.length === 0 && !instructionError;
+    element.textContent = instructions
+      .map((item) => {
+        const label =
+          item.status === "queued"
+            ? "Queued for the next step"
+            : item.status === "delivered"
+              ? "Delivered"
+              : `Not delivered (${item.reason || "run ended"})`;
+        return `${label}: ${item.text}`;
+      })
+      .concat(instructionError ? [instructionError] : [])
+      .join("\n");
+  }
+
+  function enableInstructions() {
+    sendBtn.disabled = false;
+    userInput.disabled = false;
+    sendBtn.textContent = "Send instruction";
+    userInput.placeholder = "Add an instruction for the next step...";
+    document.getElementById("attach-page").disabled = true;
+  }
+
   async function loadHistory() {
     try {
       const stored = await syscall(
@@ -289,14 +315,14 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       );
       if (stored && stored.messages) {
         chatData = stored;
+        renderInstructions(stored.run?.instructions);
         chatHistory = chatData.messages;
         await updateChatStatus();
         await renderAllMessages();
         if (stored.run?.status === "streaming") {
           isStreaming = true;
           currentStreamId = stored.run.id;
-          sendBtn.disabled = true;
-          userInput.disabled = true;
+          enableInstructions();
           stopBtn.hidden = false;
           const element = await renderMessage("assistant", "", true);
           void pollForChunks(currentStreamId, element);
@@ -420,8 +446,12 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
           messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
+        if (result.instructions) renderInstructions(result.instructions);
+
         if (result.statusMessage) {
-          userInput.placeholder = `🔧 ${result.statusMessage}`;
+          const progress = document.getElementById("run-progress");
+          progress.hidden = false;
+          progress.textContent = result.statusMessage;
         }
 
         if (result.status === "complete") {
@@ -468,8 +498,11 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       }
     }
 
+    document.getElementById("run-progress").hidden = true;
     stopBtn.hidden = true;
     stopBtn.disabled = false;
+    sendBtn.textContent = "Send";
+    document.getElementById("attach-page").disabled = false;
     sendBtn.disabled = false;
     userInput.disabled = false;
     userInput.placeholder = "Type a message...";
@@ -483,8 +516,9 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     errorEl.className = "chat-error";
     errorEl.textContent = message;
     messageEl.appendChild(errorEl);
+    sendBtn.textContent = "Send";
+    document.getElementById("attach-page").disabled = false;
     // A failed turn may have completed edits. Never resubmit it automatically.
-    userInput.value = "";
     userInput.placeholder = "Continue from the saved conversation...";
     sendBtn.disabled = false;
     userInput.disabled = false;
@@ -508,7 +542,33 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
   async function sendMessage() {
     const content = userInput.value.trim();
-    if (!content || isStreaming) return;
+    if (!content) return;
+    if (isStreaming) {
+      if (!currentStreamId || sendBtn.disabled) return;
+      sendBtn.disabled = true;
+      instructionError = "";
+      try {
+        const result = await syscall(
+          "system.invokeFunction",
+          "silverbullet-ai.steerPanelChat",
+          currentStreamId,
+          chatData.id,
+          content,
+        );
+        if (result.error) throw new Error(result.error);
+        if (userInput.value.trim() === content) userInput.value = "";
+      } catch (error) {
+        // Keep the draft available for correction or a later turn.
+        instructionError = `Instruction was not queued: ${error.message}`;
+        renderInstructions();
+      } finally {
+        sendBtn.disabled = false;
+        userInput.focus();
+      }
+      return;
+    }
+    instructionError = "";
+    renderInstructions();
 
     chatHistory.push({ role: "user", content });
     await renderAllMessages();
@@ -537,6 +597,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         isStreaming = true;
         stopBtn.hidden = false;
         stopBtn.disabled = false;
+        enableInstructions();
 
         pollForChunks(result.streamId, assistantEl);
       } else if (result.error) {
@@ -552,6 +613,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
   async function newChat() {
     if (isStreaming) return;
+    instructionError = "";
+    renderInstructions();
     const id = generateChatId();
     await syscall(
       "system.invokeFunction",

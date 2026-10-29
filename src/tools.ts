@@ -4,6 +4,8 @@ import {
   isStepCount,
   type ModelMessage,
   type ToolSet,
+  type UserModelMessage,
+  type Experimental_Steering,
 } from "ai";
 import type { ProviderInterface } from "./interfaces/Provider.ts";
 import { toSDKTools, toUsage } from "./providers/messages.ts";
@@ -1007,6 +1009,8 @@ export type AgenticChatOptions = {
   runId?: string;
   onCheckpoint?: (checkpoint: RunCheckpoint) => Promise<void>;
   enableResearch?: boolean;
+  steering?: Experimental_Steering;
+  onProgress?: (message: string) => void;
   compaction?: import("./context.ts").CompactionState;
   onCompaction?: (
     state: import("./context.ts").CompactionState,
@@ -1100,6 +1104,7 @@ async function runSDKChat(
   const interimMessages: ModelMessage[] = [];
   let inFlight: PendingTool | undefined;
   let checkpointFailure: Error | undefined;
+  let researchFailure: unknown;
   const checkpoint = async () => {
     if (checkpointFailure) throw checkpointFailure;
     try {
@@ -1156,7 +1161,34 @@ async function runSDKChat(
   });
   let executedTools = false;
   let stopAfterToolError = false;
+  if (
+    options.enableResearch !== false &&
+    permitted.has("search_notes") &&
+    permitted.has("read_note")
+  ) {
+    sdkTools.research_notes = researchTool({
+      model: provider.languageModel,
+      providerOptions: provider.providerOptions,
+      permissions,
+      maxSteps: aiSettings?.chat?.researchMaxSteps,
+      onUsage: accountUsage,
+      beforeRequest: () => {
+        checkBudget();
+        if (checkpointFailure) throw checkpointFailure;
+        if (researchFailure) throw researchFailure;
+      },
+      onCheckpoint: async (records) => {
+        if (!inFlight) throw new Error("Research has no active parent tool");
+        inFlight = { ...inFlight, research: { messages: records } };
+        await checkpoint();
+      },
+      onProgress: (name, input) =>
+        options.onProgress?.(`Research: ${name} ${JSON.stringify(input)}`),
+    });
+  }
   for (const [name, definition] of Object.entries(sdkTools)) {
+    const researchExecute =
+      name === "research_notes" ? definition.execute : undefined;
     definition.toModelOutput = ({ output }: { output: unknown }) => ({
       type: "text" as const,
       value: boundedToolOutput(
@@ -1164,37 +1196,58 @@ async function runSDKChat(
         aiSettings?.chat?.toolResultMaxChars ?? 12000,
       ),
     });
-    definition.execute = async (input, { toolCallId, abortSignal }) => {
+    definition.execute = async (input, executionOptions) => {
+      const { toolCallId, abortSignal } = executionOptions;
       signal.throwIfAborted();
       if (checkpointFailure) throw checkpointFailure;
+      if (researchFailure) throw researchFailure;
       if (stopAfterToolError)
         throw new Error(
           "A previous write failed. Verify its outcome before further actions.",
         );
-      inFlight = { toolCallId, toolName: name, input };
+      inFlight = {
+        toolCallId,
+        toolName: name,
+        input,
+        ...(researchExecute ? { research: { messages: [] } } : {}),
+      };
       await checkpoint();
       executedTools = true;
-      const processed = await processToolCalls(
-        [
-          {
-            id: toolCallId,
-            function: { name, arguments: JSON.stringify(input) },
-          },
-        ],
-        luaTools,
-        onToolCall,
-        permissions,
-        { abortSignal: abortSignal ?? signal, runId },
-      );
-      stopAfterToolError ||= processed.writeOutcomeUncertain;
-      toolCallsText += processed.toolCallsText;
-      pendingAttachments.push(...processed.attachmentMessages);
-      const result = processed.toolMessages[0];
-      const output =
-        result?.role === "tool" && result.content[0]?.type === "tool-result"
-          ? result.content[0].output
-          : undefined;
-      const value = output?.type === "text" ? output.value : "";
+      let value: string;
+      if (researchExecute) {
+        try {
+          value = String(await researchExecute(input, executionOptions));
+        } catch (error) {
+          researchFailure = error;
+          throw error;
+        }
+        onToolCall?.(name, input as Record<string, unknown>, {
+          success: true,
+          result: value,
+        });
+      } else {
+        const processed = await processToolCalls(
+          [
+            {
+              id: toolCallId,
+              function: { name, arguments: JSON.stringify(input) },
+            },
+          ],
+          luaTools,
+          onToolCall,
+          permissions,
+          { abortSignal: abortSignal ?? signal, runId },
+        );
+        stopAfterToolError ||= processed.writeOutcomeUncertain;
+        toolCallsText += processed.toolCallsText;
+        pendingAttachments.push(...processed.attachmentMessages);
+        const result = processed.toolMessages[0];
+        const output =
+          result?.role === "tool" && result.content[0]?.type === "tool-result"
+            ? result.content[0].output
+            : undefined;
+        value = output?.type === "text" ? output.value : "";
+      }
       interimMessages.push(
         {
           role: "assistant",
@@ -1217,20 +1270,6 @@ async function runSDKChat(
       return value;
     };
   }
-  if (
-    options.enableResearch !== false &&
-    permitted.has("search_notes") &&
-    permitted.has("read_note")
-  ) {
-    sdkTools.research_notes = researchTool({
-      model: provider.languageModel,
-      providerOptions: provider.providerOptions,
-      permissions,
-      maxSteps: aiSettings?.chat?.researchMaxSteps,
-      onUsage: accountUsage,
-      beforeRequest: checkBudget,
-    });
-  }
   const settings = {
     model: provider.languageModel,
     messages,
@@ -1241,21 +1280,38 @@ async function runSDKChat(
     stopWhen: isStepCount(maxIterations),
     // Serial execution preserves note edit order and approval dialogue order.
     toolCallConcurrency: 1,
-    prepareStep: async () => {
+    prepareStep: async ({
+      experimental_steeringMessages = [],
+    }: {
+      experimental_steeringMessages?: UserModelMessage[];
+    }) => {
       checkBudget();
       if (checkpointFailure) throw checkpointFailure;
+      if (researchFailure) throw researchFailure;
       if (stopAfterToolError)
         throw new Error(
           "A tool that can modify data failed. Completed work has been saved. Verify its outcome before continuing; the operation has not been retried.",
         );
       const attachments = pendingAttachments;
       pendingAttachments = [];
-      responseMessages.push(...attachments);
+      responseMessages.push(...attachments, ...experimental_steeringMessages);
+      if (experimental_steeringMessages.length) await checkpoint();
       const prepared = await prepareContext([...messages, ...responseMessages]);
       checkBudget();
       return { messages: prepared };
     },
     onStepEnd: async (step: import("ai").StepResult<ToolSet>) => {
+      if (checkpointFailure || researchFailure || inFlight?.research) {
+        await accountUsage(step.usage);
+      }
+      if (checkpointFailure) throw checkpointFailure;
+      if (researchFailure) throw researchFailure;
+      if (inFlight?.research) {
+        // A failed child must retain its completed evidence for recovery.
+        throw new Error(
+          "Research interrupted. Completed findings have been saved.",
+        );
+      }
       responseMessages.push(...step.response.messages);
       interimMessages.length = 0;
       inFlight = undefined;
@@ -1263,7 +1319,10 @@ async function runSDKChat(
       await checkpoint();
     },
   };
-  const execute = async (tools: ToolSet): Promise<AgenticChatResult> => {
+  const execute = async (
+    tools: ToolSet,
+    steering?: Experimental_Steering,
+  ): Promise<AgenticChatResult> => {
     let text: string;
     let reasoning: string | undefined;
     let finishReason;
@@ -1273,6 +1332,7 @@ async function runSDKChat(
       const result = await agent.stream({
         messages: inputMessages,
         abortSignal: signal,
+        experimental_steering: steering,
       });
       let fullReasoning = "";
       for await (const part of result.fullStream) {
@@ -1292,6 +1352,7 @@ async function runSDKChat(
       const result = await agent.generate({
         messages: inputMessages,
         abortSignal: signal,
+        experimental_steering: steering,
       });
       signal.throwIfAborted();
       text = result.text;
@@ -1318,7 +1379,7 @@ async function runSDKChat(
   };
   const unregister = registerRun(runId, signal);
   try {
-    return await execute(sdkTools);
+    return await execute(sdkTools, options.steering);
   } catch (error) {
     // Retry only before tools have run, so a failed request cannot repeat edits.
     if (
@@ -1333,7 +1394,12 @@ async function runSDKChat(
       `Model ${provider.modelName} does not support tools, continuing without them`,
       "info",
     );
+    // Preserve instructions already accepted before the provider rejected tools.
+    const acceptedInstructions = responseMessages.filter(
+      (message) => message.role === "user",
+    );
     responseMessages.length = 0;
+    responseMessages.push(...acceptedInstructions);
     return await execute({});
   } finally {
     unregister();

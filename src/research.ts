@@ -4,6 +4,7 @@ import {
   tool,
   jsonSchema,
   type LanguageModel,
+  type ModelMessage,
 } from "ai";
 import { buildReadNoteTool } from "./note-tools.ts";
 import { buildSearchNotesTool } from "./search.ts";
@@ -17,6 +18,8 @@ export function researchTool(options: {
   maxSteps?: number;
   onUsage?: (usage: import("ai").LanguageModelUsage) => void | Promise<void>;
   beforeRequest?: () => void;
+  onCheckpoint?: (messages: ModelMessage[]) => Promise<void>;
+  onProgress?: (name: string, input: Record<string, unknown>) => void;
 }) {
   const maxSteps = options.maxSteps ?? 6;
   if (!Number.isInteger(maxSteps) || maxSteps < 1)
@@ -39,6 +42,9 @@ export function researchTool(options: {
       abortSignal?.throwIfAborted();
       if (!task.trim() || task.length > 4000)
         throw new Error("Research task must contain 1 to 4000 characters");
+      const records: ModelMessage[] = [{ role: "user", content: task }];
+      const interim: ModelMessage[] = [];
+      await options.onCheckpoint?.(records);
       const definitions = {
         search_notes: buildSearchNotesTool(),
         read_note: buildReadNoteTool(),
@@ -51,16 +57,44 @@ export function researchTool(options: {
             inputSchema: jsonSchema<Record<string, unknown>>(
               definition.parameters,
             ),
-            execute: async (args, { abortSignal: signal }) => {
+            execute: async (args, { abortSignal: signal, toolCallId }) => {
               signal?.throwIfAborted();
+              options.beforeRequest?.();
+              options.onProgress?.(name, args);
               const result = await definition.execute!(args, permissions, {
                 abortSignal: signal,
               });
-              return boundedToolOutput(
+              const value = boundedToolOutput(
                 result.success
                   ? (result.result ?? "")
                   : `Error: ${result.error}`,
               );
+              interim.push(
+                {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "tool-call",
+                      toolCallId,
+                      toolName: name,
+                      input: args,
+                    },
+                  ],
+                },
+                {
+                  role: "tool",
+                  content: [
+                    {
+                      type: "tool-result",
+                      toolCallId,
+                      toolName: name,
+                      output: { type: "text", value },
+                    },
+                  ],
+                },
+              );
+              await options.onCheckpoint?.([...records, ...interim]);
+              return value;
             },
           }),
         ]),
@@ -90,6 +124,9 @@ export function researchTool(options: {
           return { messages: prepared };
         },
         onStepEnd: async (step) => {
+          records.push(...step.response.messages);
+          interim.length = 0;
+          await options.onCheckpoint?.([...records]);
           await options.onUsage?.(step.usage);
         },
       });
