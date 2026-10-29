@@ -240,16 +240,19 @@ enabled. It respects agent tool filters and `allowedReadPaths`.
 | Parameter | Meaning |
 |-----------|---------|
 | `query` | Required search text, up to 1,000 characters |
-| `mode` | `text` (default) or `semantic` |
+| `mode` | Literal `text` (default), fuzzy `title` or `path`, or indexed `semantic` |
 | `path` | Optional note name or folder scope |
 | `limit` | Maximum matches, from 1 to 50, default 20 |
 | `caseSensitive` | Text mode only, default `false` |
+| `cursor` | Text mode continuation from the previous `nextCursor` |
+| `offset` | Offset for title, path and semantic modes only |
+| `surroundingLines` | Up to five context lines on each side of a text match |
 
 Text mode works like `grep -F`: it finds literal text, including punctuation,
 and returns page names, one-based line numbers and snippets. It scans readable
 notes in name order, so use `path` to narrow searches in large spaces. It does
 not execute shell commands or interpret regular expressions. Results include
-`truncated` when further matches exist and a count of unreadable pages.
+`truncated` when further matches exist, `nextCursor` for continuation, and a count of unreadable pages in this call. Keep the same query and scope when using a cursor. Cursors expire after five minutes or relevant note changes; restart the search if instructed. Continuations do not rescan earlier pages.
 
 Semantic mode requires enabled embedding indexing and a configured embedding
 model. It returns indexed passages with page references and similarity scores.

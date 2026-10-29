@@ -62,6 +62,11 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   let currentStreamId = null;
   let isStreaming = false;
   let instructionError = "";
+  let liveMessageEl;
+  let pushChannel;
+  let connecting = Promise.resolve();
+  let lastPreview;
+  let terminalRunId;
 
   function formatNumber(n) {
     return n.toLocaleString();
@@ -124,6 +129,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       );
       await updateChatStatus();
       if (!isStreaming) await renderAllMessages();
+      else renderLivePreview(lastPreview);
     } catch (e) {
       console.error("Failed to toggle reasoning:", e);
     }
@@ -316,7 +322,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       if (stored && stored.messages) {
         chatData = stored;
         renderInstructions(stored.run?.instructions);
-        chatHistory = chatData.messages;
+        chatHistory = stored.displayMessages ?? chatData.messages;
         await updateChatStatus();
         await renderAllMessages();
         if (stored.run?.status === "streaming") {
@@ -324,16 +330,19 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
           currentStreamId = stored.run.id;
           enableInstructions();
           stopBtn.hidden = false;
-          const element = await renderMessage("assistant", "", true);
-          void pollForChunks(currentStreamId, element);
+          liveMessageEl = await renderMessage("assistant", "", true);
         } else if (stored.run && stored.run.status !== "complete") {
+          resetRunControls();
           await renderMessage(
             "assistant",
             stored.run.error ||
               "The previous turn was interrupted. Completed work has been kept. Continue when ready.",
           );
+        } else {
+          resetRunControls();
         }
       } else {
+        resetRunControls();
         chatData = { id: generateChatId(), messages: [] };
       }
       await updateChatStatus();
@@ -431,73 +440,26 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     }
   }
 
-  async function pollForChunks(streamId, messageEl) {
-    while (isStreaming && currentStreamId === streamId) {
-      try {
-        const result = await syscall(
-          "system.invokeFunction",
-          "silverbullet-ai.getPanelChatChunk",
-          streamId,
-        );
+  function renderLivePreview(preview) {
+    lastPreview = preview;
+    if (!liveMessageEl || !preview) return;
+    liveMessageEl.textContent = preview.parts
+      .map((part) => {
+        if (part.type === "text") return part.text;
+        if (part.type === "reasoning" && lastReasoningEnabled)
+          return `Reasoning: ${part.text}`;
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n\n");
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  }
 
-        if (result.chunks && result.chunks.length > 0) {
-          const currentText = messageEl.textContent;
-          messageEl.textContent = currentText + result.chunks.join("");
-          messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
-        if (result.instructions) renderInstructions(result.instructions);
-
-        if (result.statusMessage) {
-          const progress = document.getElementById("run-progress");
-          progress.hidden = false;
-          progress.textContent = result.statusMessage;
-        }
-
-        if (result.status === "complete") {
-          isStreaming = false;
-          messageEl.classList.remove("streaming");
-          const fullResponse = messageEl.textContent;
-          try {
-            await renderMarkdownToElement(fullResponse, messageEl);
-          } catch (e) {
-            console.error("Failed to render markdown:", e);
-          }
-          if (!Array.isArray(result.messages))
-            throw new Error("Chat completed without SDK messages");
-          chatHistory = result.messages;
-          await renderAllMessages();
-          await saveHistory();
-          await updateChatStatus();
-          break;
-        } else if (result.status === "error" || result.status === "cancelled") {
-          isStreaming = false;
-          if (result.messages) {
-            chatHistory = result.messages;
-            await renderAllMessages();
-          }
-          const errorElement = await renderMessage("assistant", "");
-          await showChatError(errorElement, result.error || "Stopped");
-          await updateChatStatus();
-          break;
-        }
-
-        // TODO: Add a config option for this, it might be kind of aggressive since we're polling and not really streaming
-        await new Promise((r) => setTimeout(r, 50));
-      } catch (e) {
-        console.error("Polling error:", e);
-        isStreaming = false;
-        await syscall(
-          "system.invokeFunction",
-          "silverbullet-ai.cancelPanelChat",
-          streamId,
-        ).catch(() => {});
-        await showChatError(messageEl, e.message);
-        await updateChatStatus();
-        break;
-      }
-    }
-
+  function resetRunControls() {
+    isStreaming = false;
+    currentStreamId = null;
+    liveMessageEl = undefined;
+    lastPreview = undefined;
     document.getElementById("run-progress").hidden = true;
     stopBtn.hidden = true;
     stopBtn.disabled = false;
@@ -506,7 +468,118 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     sendBtn.disabled = false;
     userInput.disabled = false;
     userInput.placeholder = "Type a message...";
-    userInput.focus();
+  }
+
+  async function applyPanelState(state, isCurrent) {
+    if (!isCurrent()) return;
+    if (state.agentRef !== displayedAgentRef) await loadCurrentAgent();
+    if (!isCurrent()) return;
+    if (lastReasoningEnabled !== state.reasoningEnabled) {
+      await updateChatStatus();
+      if (!isCurrent()) return;
+      renderLivePreview(lastPreview);
+    }
+    const run = state.run;
+    if (!run || run.chatId !== chatData.id || run.id !== currentStreamId)
+      return;
+    renderInstructions(run.instructions);
+    const progress = document.getElementById("run-progress");
+    progress.hidden = !run.statusMessage && !run.previewLimited;
+    progress.textContent = run.previewLimited
+      ? "Live preview limit reached. The run continues; its complete response will appear when it finishes."
+      : run.statusMessage || "";
+    if (run.status === "streaming") {
+      renderLivePreview(run.preview);
+      return;
+    }
+    if (terminalRunId === run.id) return;
+    const stored = await syscall(
+      "system.invokeFunction",
+      "silverbullet-ai.getPanelChatHistory",
+    );
+    if (
+      !isCurrent() ||
+      run.id !== currentStreamId ||
+      stored?.id !== chatData.id
+    )
+      return;
+    if (!Array.isArray(stored.messages))
+      throw new Error("Run ended without saved SDK messages");
+    terminalRunId = run.id;
+    chatHistory = stored.messages;
+    await renderAllMessages();
+    await saveHistory();
+    resetRunControls();
+    if (run.status !== "complete")
+      await showChatError(
+        await renderMessage("assistant", ""),
+        run.error || "Stopped",
+      );
+    await updateChatStatus();
+  }
+
+  function disconnectPanel() {
+    if (!pushChannel) return;
+    pushChannel.postMessage({ type: "close" });
+    pushChannel.close();
+    pushChannel = undefined;
+  }
+
+  function connectPanel() {
+    const connect = async () => {
+      disconnectPanel();
+      const result = await syscall(
+        "system.invokeFunction",
+        "silverbullet-ai.connectPanelChat",
+      );
+      if (!result?.channel)
+        throw new Error(
+          "Push connection is unavailable. Reopen the panel to reconnect.",
+        );
+      const channel = new BroadcastChannel(result.channel);
+      pushChannel = channel;
+      let lastSequence = -1;
+      let processing = Promise.resolve();
+      channel.onmessage = ({ data }) => {
+        processing = processing
+          .then(async () => {
+            if (
+              pushChannel !== channel ||
+              !Number.isSafeInteger(data?.sequence)
+            )
+              return;
+            if (data.sequence > lastSequence) {
+              await applyPanelState(data.state, () => pushChannel === channel);
+              lastSequence = data.sequence;
+            }
+            if (pushChannel === channel)
+              channel.postMessage({ type: "ack", sequence: data.sequence });
+          })
+          .catch((error) => {
+            instructionError = `Panel update failed: ${error.message}. Reopen the panel to recover saved work.`;
+            renderInstructions();
+            disconnectPanel();
+          });
+      };
+      channel.onmessageerror = () => {
+        disconnectPanel();
+        void reconnectPanel();
+      };
+      channel.postMessage({ type: "ready" });
+    };
+    connecting = connecting.then(connect, connect);
+    return connecting;
+  }
+
+  async function reconnectPanel() {
+    try {
+      disconnectPanel();
+      await loadHistory();
+      await connectPanel();
+    } catch (error) {
+      instructionError = `Could not reconnect: ${error.message}`;
+      renderInstructions();
+    }
   }
 
   async function showChatError(messageEl, message) {
@@ -534,6 +607,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         "silverbullet-ai.cancelPanelChat",
         currentStreamId,
       );
+      await reconnectPanel();
     } catch (error) {
       stopBtn.disabled = false;
       console.error("Failed to stop chat:", error);
@@ -579,7 +653,10 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     sendBtn.disabled = true;
     userInput.disabled = true;
 
+    disconnectPanel();
     const assistantEl = await renderMessage("assistant", "", true);
+    liveMessageEl = assistantEl;
+    terminalRunId = undefined;
     isStreaming = true;
 
     try {
@@ -599,7 +676,12 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         stopBtn.disabled = false;
         enableInstructions();
 
-        pollForChunks(result.streamId, assistantEl);
+        try {
+          await connectPanel();
+        } catch (error) {
+          instructionError = `Live updates disconnected: ${error.message}. Reopen the panel to reconnect, or use Stop to cancel the run.`;
+          renderInstructions();
+        }
       } else if (result.error) {
         showChatError(assistantEl, result.error);
       }
@@ -865,23 +947,22 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     syscall("editor.navigate", pageName);
   });
 
-  loadHistory();
-  loadCurrentAgent();
+  void (async () => {
+    await loadHistory();
+    await loadCurrentAgent();
+    await connectPanel();
+  })().catch((error) => {
+    instructionError = error.message;
+    renderInstructions();
+  });
   userInput.focus();
 
-  // Poll for agent changes triggered externally (e.g. command palette)
-  setInterval(async function () {
-    if (displayedAgentRef === undefined) return; // not yet initialized
-    try {
-      const state = await syscall(
-        "system.invokeFunction",
-        "silverbullet-ai.getPollState",
-      );
-      if (state.agentRef !== displayedAgentRef) {
-        await loadCurrentAgent();
-      }
-    } catch (_e) {
-      // ignore transient polling errors
-    }
-  }, 1500);
+  window.addEventListener("pagehide", disconnectPanel);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void reconnectPanel();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") void reconnectPanel();
+    else disconnectPanel();
+  });
 })();

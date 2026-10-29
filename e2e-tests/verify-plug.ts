@@ -51,14 +51,20 @@ try {
   assert.equal(manifest.name, "silverbullet-ai");
   assert.ok(manifest.functions.chat);
   assert.ok(manifest.functions.steerPanelChat);
+  assert.ok(manifest.functions.connectPanelChat);
+  assert.equal(manifest.functions.getPanelChatChunk, undefined);
+  assert.equal(manifest.functions.getPollState, undefined);
   assert.ok(manifest.functions.streamChatOnPage);
   console.log(
     `SilverBullet worker loaded: ${Object.keys(manifest.functions).length} functions`,
   );
 
   const panel = await browser.newPage();
+  await panel.route("http://localhost:9876/**", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
+  await panel.goto("http://localhost:9876/");
   const panelErrors: string[] = [];
   panel.on("pageerror", (error) => panelErrors.push(error.message));
+  panel.on("console", (message) => { if (message.type() === "error") console.error("Panel:", message.text()); });
   await panel.setContent(
     await readFile(
       new URL("../assets/chat-panel.html", import.meta.url),
@@ -70,6 +76,35 @@ try {
     const store: Record<string, any> = {};
     (globalThis as any).testStore = store;
     (globalThis as any).submittedMessages = [];
+    let channel: BroadcastChannel | undefined;
+    let sequence = 0;
+    const pushUpdate = async () => {
+      const saved = store["ai.panelChatHistory.sdk.v1"];
+      const run = saved
+        ? await (globalThis as any).syscall(
+            "system.invokeFunction",
+            "test.snapshot",
+          )
+        : undefined;
+      if (saved && run)
+        saved.run = {
+          id: "test-stream",
+          status: run.status,
+          error: run.error,
+          instructions: run.instructions,
+        };
+      channel?.postMessage({
+        sequence: ++sequence,
+        state: {
+          agentRef: null,
+          reasoningEnabled: false,
+          run: run
+            ? { ...run, id: "test-stream", chatId: saved.id }
+            : undefined,
+        },
+      });
+    };
+
     (globalThis as any).syscall = async (name: string, ...args: unknown[]) => {
       if (name === "clientStore.get") return store[String(args[0])];
       if (name === "clientStore.set") {
@@ -79,6 +114,18 @@ try {
       if (name === "markdown.markdownToHtml") return args[0];
       if (name !== "system.invokeFunction") return undefined;
       switch (args[0]) {
+        case "silverbullet-ai.connectPanelChat": {
+          channel?.close();
+          const name = `test-${crypto.randomUUID()}`;
+          channel = new BroadcastChannel(name);
+          channel.onmessage = ({ data }) => {
+            if (data.type === "ready") void pushUpdate();
+          };
+          return { channel: name };
+        }
+        case "silverbullet-ai.getPanelChatChunk":
+        case "silverbullet-ai.getPollState":
+          throw new Error("Polling is forbidden");
         case "silverbullet-ai.getPanelChatHistory":
           return store["ai.panelChatHistory.sdk.v1"];
         case "silverbullet-ai.resetPanelChatHistory":
@@ -92,10 +139,12 @@ try {
             text: args[3],
             status: "queued",
           };
+          void pushUpdate();
           return { id: "instruction" };
         }
         case "silverbullet-ai.cancelPanelChat":
           (globalThis as any).stopCalled = true;
+          await pushUpdate();
           return;
         case "silverbullet-ai.getChatStatus":
           return {
@@ -105,8 +154,6 @@ try {
           };
         case "silverbullet-ai.chatAgentState":
           return null;
-        case "silverbullet-ai.getPollState":
-          return { agentRef: null };
         case "silverbullet-ai.startPanelChat":
           (globalThis as any).submittedOptions = args[3];
           (globalThis as any).submittedMessages.push(
@@ -117,7 +164,7 @@ try {
             messages: JSON.parse(JSON.stringify(args[1])),
           };
           return { streamId: "test-stream" };
-        case "silverbullet-ai.getPanelChatChunk": {
+        case "test.snapshot": {
           if ((globalThis as any).holdRun)
             return (globalThis as any).stopCalled
               ? {
@@ -207,7 +254,7 @@ try {
     [...document.querySelectorAll(".message.assistant:not(.streaming)")].some(
       (element) => element.textContent === "Search is available through tools.",
     ),
-  );
+  ).catch(async (error) => { console.error(await panel.locator("body").innerText()); console.error(await panel.evaluate(() => (globalThis as any).testStore)); throw error; });
   assert.equal(
     await panel
       .locator("#rag-indicator, #overflow-rag-btn, .rag-context")
@@ -247,9 +294,7 @@ try {
   assert.equal(await panel.locator("#attach-page").isChecked(), false);
   assert.deepEqual(submitted.slice(0, -1), saved);
   assert.deepEqual(submitted.at(-1), { role: "user", content: "Continue" });
-  await panel.waitForFunction(
-    () => !(document.getElementById("send-btn") as HTMLButtonElement).disabled,
-  );
+  await panel.locator("#stop-btn").waitFor({ state: "hidden" });
   await panel.evaluate(() => {
     (globalThis as any).holdRun = true;
   });
@@ -287,9 +332,7 @@ try {
   );
   await panel.locator("#stop-btn").click();
   await panel.locator("#stop-btn").waitFor({ state: "hidden" });
-  await panel.waitForFunction(
-    () => !(document.getElementById("send-btn") as HTMLButtonElement).disabled,
-  );
+  await panel.locator("#stop-btn").waitFor({ state: "hidden" });
   assert.equal(
     await panel.evaluate(() => (globalThis as any).stopCalled),
     true,
@@ -307,6 +350,64 @@ try {
   assert.deepEqual(panelErrors, []);
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",
+  );
+  const diffBuild = await Bun.build({
+    entrypoints: [new URL("../src/diff.ts", import.meta.url).pathname],
+    target: "browser",
+    minify: true,
+  });
+  assert.equal(diffBuild.success, true);
+  await page.route("http://localhost:9876/approval-diff.js", async (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: await diffBuild.outputs[0].text(),
+    }),
+  );
+  const preview = await page.evaluate(async () => {
+    const module = await import("http://localhost:9876/approval-diff.js");
+    return module.computeApprovalDiff(
+      "repeat\r\nrepeat\r\n",
+      "repeat\n<script>bad()</script>",
+    );
+  });
+  const approval = await browser.newPage();
+  await approval.setContent(
+    await readFile(
+      new URL("../assets/tool-approval-modal.html", import.meta.url),
+      "utf8",
+    ),
+  );
+  await approval.evaluate((diff) => {
+    (globalThis as any).toolApprovalData = {
+      approvalId: "preview",
+      toolName: "edit_note",
+      args: {},
+      hasDiffSupport: true,
+      isWriteApproval: true,
+    };
+    (globalThis as any).syscall = async (name: string, fn: string) => {
+      if (
+        name === "system.invokeFunction" &&
+        fn === "silverbullet-ai.getWriteDiff"
+      )
+        return { diff };
+    };
+  }, preview);
+  await approval.addScriptTag({
+    content: await readFile(
+      new URL("../assets/tool-approval-modal.js", import.meta.url),
+      "utf8",
+    ),
+  });
+  await approval.locator(".diff-line").first().waitFor();
+  assert.match(await approval.locator("#diff-view").innerText(), /\[CRLF\]/);
+  assert.match(
+    await approval.locator("#diff-view").innerText(),
+    /\[no final newline\]/,
+  );
+  assert.equal(await approval.locator("#diff-view script").count(), 0);
+  console.log(
+    "Library diff runs in Chromium and approval previews preserve line endings safely",
   );
   const account = await browser.newPage();
   const accountErrors: string[] = [];

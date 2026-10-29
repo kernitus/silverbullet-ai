@@ -1,4 +1,5 @@
-import { experimental_createSteering } from "ai";
+import { experimental_createSteering, type UIMessage } from "ai";
+import { createPanelPush } from "./panel-push.ts";
 import { currentPageContext } from "./page-context.ts";
 import { filterCapabilities, isRestricted } from "./capabilities.ts";
 import { interruptedMessages, type RunCheckpoint } from "./execution.ts";
@@ -69,8 +70,9 @@ let sessionTokenUsage: Usage = {
 let tokenUsageLoaded = false;
 
 interface StreamBuffer {
-  chunks: string[];
-  reasoningChunks: string[];
+  baseMessages: ChatMessage[];
+  preview?: UIMessage;
+  previewLimited?: boolean;
   status: "streaming" | "complete" | "error" | "cancelled";
   controller: AbortController;
   chatId: string;
@@ -82,6 +84,42 @@ interface StreamBuffer {
   messages?: ChatMessage[];
 }
 const streamBuffers = new Map<string, StreamBuffer>();
+let latestRunId: string | undefined;
+let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+const panelPush = createPanelPush(() => {
+  const buffer = latestRunId ? streamBuffers.get(latestRunId) : undefined;
+  return {
+    agentRef: currentChatAgent?.ref ?? null,
+    reasoningEnabled: aiSettings?.chat?.showReasoning ?? false,
+    run: buffer
+      ? {
+          id: latestRunId,
+          chatId: buffer.chatId,
+          status: buffer.status,
+          preview: buffer.preview,
+          previewLimited: buffer.previewLimited,
+          statusMessage: buffer.statusMessage,
+          instructions: buffer.instructions,
+          error: buffer.error,
+        }
+      : undefined,
+  };
+});
+
+export function connectPanelChat() {
+  return panelPush.connect();
+}
+
+function finishPanelRun(id: string): void {
+  panelPush.changed();
+  // Reopening recovers terminal history from storage after this live cache expires.
+  clearTimeout(expiryTimer);
+  expiryTimer = setTimeout(() => {
+    expiryTimer = undefined;
+    if (streamBuffers.get(id)?.status !== "streaming") streamBuffers.delete(id);
+  }, 5 * 60_000);
+}
+
 const TOKEN_USAGE_KEY = "ai.panelTokenUsage";
 const PANEL_STATE_KEY = "ai.panelOpen";
 const AGENT_KEY = "ai.panelAgent";
@@ -107,10 +145,12 @@ export async function chatAgentState(
     case "set":
       currentChatAgent = agent ?? null;
       await clientStore.set(AGENT_KEY, currentChatAgent);
+      panelPush.changed();
       break;
     case "clear":
       currentChatAgent = null;
       await clientStore.del(AGENT_KEY);
+      panelPush.changed();
       break;
   }
 }
@@ -186,6 +226,7 @@ export async function closeAIAssistant() {
   await editor.hidePanel("rhs");
   await editor.hidePanel("modal");
   isPanelOpen = false;
+  panelPush.close();
   await clientStore.set(PANEL_STATE_KEY, false);
 }
 
@@ -267,9 +308,13 @@ export async function startPanelChat(
           "Start a new chat before changing to a restricted agent or changing its path permissions. Earlier conversation contents may be outside the new scope.",
       };
     }
+    // Only the active or most recent run needs live preview state.
+    clearTimeout(expiryTimer);
+    expiryTimer = undefined;
+    streamBuffers.clear();
+    latestRunId = streamId;
     streamBuffers.set(streamId, {
-      chunks: [],
-      reasoningChunks: [],
+      baseMessages: messages,
       status: "streaming",
       controller,
       chatId,
@@ -405,6 +450,7 @@ export async function startPanelChat(
         : undefined;
     await beginPanelTurn(chatId, streamId, messages, scope, compaction);
     const runningId = streamId;
+    panelPush.changed();
     runToolLoop(
       runningId,
       workingMessages,
@@ -437,6 +483,7 @@ export async function startPanelChat(
             buffer.error,
           );
           buffer.status = terminalStatus;
+          finishPanelRun(runningId);
         }
       })
       .catch((error) => {
@@ -444,6 +491,7 @@ export async function startPanelChat(
         if (buffer) {
           buffer.status = "error";
           buffer.error = `Could not save recovery state: ${error instanceof Error ? error.message : String(error)}`;
+          finishPanelRun(runningId);
         }
       });
 
@@ -485,6 +533,7 @@ async function runToolLoop(
     steering: buffer.steering,
     onProgress: (message) => {
       buffer.statusMessage = message;
+      panelPush.changed();
     },
     compaction,
     onCompaction: (state) =>
@@ -498,11 +547,18 @@ async function runToolLoop(
       };
       await savePanelCheckpoint(buffer.chatId, streamId, buffer.checkpoint);
     },
-    onChunk: (chunk) => buffer.chunks.push(chunk),
-    onReasoningChunk: (chunk) => buffer.reasoningChunks.push(chunk),
+    onPreview: (message) => {
+      buffer.preview = message;
+      panelPush.changed();
+    },
+    onPreviewLimited: () => {
+      buffer.previewLimited = true;
+      panelPush.changed();
+    },
     onToolCall: (toolName, _args, result) => {
       const status = result.success ? "✓" : "✗";
       buffer.statusMessage = `${status} ${toolName}`;
+      panelPush.changed();
     },
     permissions,
   });
@@ -517,6 +573,7 @@ async function runToolLoop(
     "complete",
   );
   buffer.status = "complete";
+  finishPanelRun(streamId);
 }
 
 async function settlePanelInstructions(
@@ -569,6 +626,7 @@ export async function steerPanelChat(
       await savePanelInstruction(chatId, streamId, instruction);
       return { error: instruction.reason };
     }
+    panelPush.changed();
     void buffer.steering
       .steer(instruction.text, { id: instruction.id })
       .then(async (outcome) => {
@@ -576,6 +634,7 @@ export async function steerPanelChat(
         if (outcome.type === "not-delivered")
           instruction.reason = outcome.reason;
         await savePanelInstruction(chatId, streamId, instruction);
+        panelPush.changed();
       })
       .catch((error) => {
         buffer.statusMessage = `Could not save instruction delivery status: ${String(error)}`;
@@ -595,10 +654,14 @@ export async function cancelPanelChat(streamId: string): Promise<void> {
     ?.controller.abort(new DOMException("Stopped by user", "AbortError"));
 }
 
-export function getPanelChatHistory() {
-  return loadPanelHistory(
+export async function getPanelChatHistory() {
+  const stored = await loadPanelHistory(
     (id) => streamBuffers.get(id)?.status === "streaming",
   );
+  const buffer = stored?.run ? streamBuffers.get(stored.run.id) : undefined;
+  return buffer?.status === "streaming"
+    ? { ...stored!, displayMessages: buffer.baseMessages }
+    : stored;
 }
 
 export async function resetPanelChatHistory(id: string): Promise<void> {
@@ -608,46 +671,11 @@ export async function resetPanelChatHistory(id: string): Promise<void> {
   )
     throw new Error("Stop the running chat before starting a new one.");
   await clearPanelHistory(id);
-}
-
-/**
- * Buffers and returns chunks for a stream.
- * This is a workaround so that the panel iframe can still sort of get
- * streaming.  It's called by the panel js repeatedly.
- */
-export function getPanelChatChunk(streamId: string): {
-  chunks: string[];
-  status: string;
-  error?: string;
-  statusMessage?: string;
-  messages?: ChatMessage[];
-  instructions?: RunInstruction[];
-} {
-  const buffer = streamBuffers.get(streamId);
-
-  if (!buffer) {
-    return { chunks: [], status: "error", error: "Stream not found" };
-  }
-
-  const chunks = [...buffer.chunks];
-  buffer.chunks = [];
-
-  const statusMessage = buffer.statusMessage;
-  if (buffer.status !== "streaming") {
-    buffer.statusMessage = undefined;
-    setTimeout(() => {
-      streamBuffers.delete(streamId);
-    }, 5000);
-  }
-
-  return {
-    chunks,
-    status: buffer.status,
-    error: buffer.error,
-    statusMessage,
-    messages: buffer.messages,
-    instructions: buffer.instructions,
-  };
+  clearTimeout(expiryTimer);
+  expiryTimer = undefined;
+  streamBuffers.clear();
+  latestRunId = undefined;
+  panelPush.changed();
 }
 
 /**
@@ -815,18 +843,6 @@ export interface ChatStatus {
 }
 
 /**
- * Returns the selected agent for polling without provider calls.
- */
-export async function getPollState(): Promise<{
-  agentRef: string | null;
-}> {
-  await initIfNeeded();
-  return {
-    agentRef: currentChatAgent?.ref ?? null,
-  };
-}
-
-/**
  * Returns consolidated chat panel status including reasoning, tokens and model information.
  */
 export async function getChatStatus(): Promise<ChatStatus> {
@@ -863,6 +879,7 @@ async function toggleChatSetting(
   const newValue = !(aiSettings.chat[settingKey] ?? false);
   aiSettings.chat[settingKey] = newValue;
   setSessionToggle(settingKey);
+  panelPush.changed();
 
   await editor.flashNotification(
     newValue ? enabledMessage : disabledMessage,

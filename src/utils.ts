@@ -47,7 +47,8 @@ export function isPathAllowed(
   page: string,
   allowedPaths: string[] | undefined,
 ): boolean {
-  if (page.split("/").some(segment => segment === "." || segment === "..")) return false;
+  if (page.split("/").some((segment) => segment === "." || segment === ".."))
+    return false;
   if (allowedPaths === undefined) return true;
   return allowedPaths.some((path) => {
     const prefix = path.replace(/\/+$/, "");
@@ -539,11 +540,6 @@ async function enrichMessageWithWikiLinks(
 
 export { buildProxyHeaders, buildProxyUrl } from "./proxy.ts";
 
-export type DiffLine = {
-  type: "same" | "add" | "remove";
-  line: string;
-};
-
 /**
  * Renders an ASCII progress bar for display in modals.
  * @param current - Current progress value (1-indexed typically)
@@ -646,49 +642,4 @@ export function showProgressModal(
       </div>
     </div>`,
   );
-}
-
-/**
- * Computes a simple line-by-line diff between two strings.
- * Returns an array of diff lines with type indicators.
- * TODO: Probably should use a real library for this, but it works fine for simple stuff so far
- */
-export function computeSimpleDiff(before: string, after: string): DiffLine[] {
-  const beforeLines = before.split("\n");
-  const afterLines = after.split("\n");
-  const result: DiffLine[] = [];
-
-  const beforeSet = new Set(beforeLines);
-  const afterSet = new Set(afterLines);
-
-  let bi = 0;
-  let ai = 0;
-
-  while (bi < beforeLines.length || ai < afterLines.length) {
-    const beforeLine = beforeLines[bi];
-    const afterLine = afterLines[ai];
-
-    if (bi >= beforeLines.length) {
-      result.push({ type: "add", line: afterLine });
-      ai++;
-    } else if (ai >= afterLines.length) {
-      result.push({ type: "remove", line: beforeLine });
-      bi++;
-    } else if (beforeLine === afterLine) {
-      result.push({ type: "same", line: beforeLine });
-      bi++;
-      ai++;
-    } else if (!afterSet.has(beforeLine)) {
-      result.push({ type: "remove", line: beforeLine });
-      bi++;
-    } else if (!beforeSet.has(afterLine)) {
-      result.push({ type: "add", line: afterLine });
-      ai++;
-    } else {
-      result.push({ type: "remove", line: beforeLine });
-      bi++;
-    }
-  }
-
-  return result;
 }

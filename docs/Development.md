@@ -52,6 +52,31 @@ include development dependencies. A production install does not remove existing
 development packages; use `bun prune --production` before building locally if
 you need to exclude them from an existing checkout.
 
+## Panel push delivery
+
+The panel receives SDK message previews and run state through a native
+`BroadcastChannel` from the plug worker. It does not poll for generated text or
+agent state. Reopening the panel restores saved history and reconnects to an
+active run. Stop remains available if live delivery fails after a run starts.
+
+The worker keeps one outstanding snapshot per connection and coalesces newer
+updates until the panel acknowledges delivery. Live preview processing stops at
+262144 serialised event characters or 4096 SDK events per streamed invocation;
+the panel explains when this happens. Generation continues and the complete
+final SDK messages remain in saved history.
+
+After building, test the actual SilverBullet iframe and compiled worker together:
+
+```shell
+SB_CHROME_PATH=/usr/bin/chromium SB_CORE_CHECKOUT=/path/to/silverbullet bun run --cwd e2e-tests test:push
+```
+
+Use core revision `4f9edf885354e5cc28b4c1ceaebf40aec3eaa319` to reproduce the
+verified host topology. The fixture supplies host syscalls and a controlled
+streaming provider; it does not modify a running space. See the
+[research record](research/agent-runtime-improvements.md) for bounds and remaining
+compatibility checks.
+
 ## AI SDK integration
 
 Vercel AI SDK handles text generation, streaming, structured output, tool steps,
@@ -202,7 +227,7 @@ Older turns and completed steps in long tool loops are summarised through the co
 
 The panel supplies the current page name and selected text within the agent's read permissions. **Attach current page** includes the editor's full current content for the next turn, including unsaved changes, and resets after submission. Without that explicit attachment, the agent uses `read_note` to inspect content. Explicit custom context and configured agent attachments still apply.
 
-`search_notes` supports literal `text`, fuzzy `title` and `path`, and indexed `semantic` modes. Title and path matching reuse SilverBullet's fuzzy ranker and do not read note contents. `offset` and the returned `nextOffset` paginate matching results; keep the same search arguments between pages. Text mode's `surroundingLines` adds up to five numbered lines on either side. Text search scans permitted pages in deterministic name order; each offset request scans again, and changes between requests can shift results. No additional index is maintained.
+`search_notes` supports literal `text`, fuzzy `title` and `path`, and indexed `semantic` modes. Title and path matching reuse SilverBullet's fuzzy ranker and do not read note contents. Text mode returns `nextCursor`; pass it as `cursor` with the same query, case, surrounding-line setting and read scope. The limit may change. Continuations resume at the saved page and line, avoiding scans of earlier pages. They expire after five minutes, on relevant file events, or when the permitted page listing changes. The resumed page is reread and its content hash checked before returning results. An expired or invalidated cursor requires a new search. Text mode rejects nonzero `offset`; title, path and semantic modes retain `offset` and `nextOffset`. Text mode's `surroundingLines` adds up to five numbered lines on either side. At most 32 cursors and eight active text searches are retained; no note content cache or extra index is maintained. Searches yield during long scans so cancellation can run. This improves continuation read counts, while first searches and no-match queries still scan permitted notes. See the [research and benchmark record](research/agent-runtime-improvements.md).
 
 `edit_note` replaces exactly one occurrence of `oldText` with `newText`; absent or ambiguous matches fail. `create_note` refuses to overwrite an existing page. Both enforce read and write permissions, use the existing diff approval dialogue, propagate cancellation and check the expected page content before approval and before the approved write. The plug API does not offer an atomic conditional write, so a concurrent edit in the final read-to-write interval remains possible. Restricted agents cannot use these tools on content containing Space Lua.
 

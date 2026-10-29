@@ -1,3 +1,5 @@
+import { consumeAgentStream } from "./ui-stream.ts";
+import { computeApprovalDiff, type DiffLine } from "./diff.ts";
 import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
 import {
   ToolLoopAgent,
@@ -16,13 +18,7 @@ import {
   lua,
   space,
 } from "@silverbulletmd/silverbullet/syscalls";
-import {
-  attachmentMessage,
-  computeSimpleDiff,
-  type DiffLine,
-  isPathAllowed,
-  log,
-} from "./utils.ts";
+import { attachmentMessage, isPathAllowed, log } from "./utils.ts";
 import { getFileHandlerExts, resolveFileToAttachment } from "./files.ts";
 import type {
   ChatMessage,
@@ -654,7 +650,7 @@ export async function requestWriteApproval(
 
   // Read current content and compute diff
   const isNewPage = currentContent === null;
-  const diff = computeSimpleDiff(currentContent ?? "", newContent);
+  const diff = computeApprovalDiff(currentContent ?? "", newContent);
 
   if (pendingApprovals.size || pendingWrites.size) {
     return {
@@ -1029,6 +1025,8 @@ export type AgenticChatResult = {
 export type StreamingAgenticChatOptions = AgenticChatOptions & {
   onChunk?: (chunk: string) => void;
   onReasoningChunk?: (chunk: string) => void;
+  onPreview?: (message: import("ai").UIMessage) => void;
+  onPreviewLimited?: () => void;
 };
 
 export function runAgenticChat(
@@ -1334,14 +1332,10 @@ async function runSDKChat(
         abortSignal: signal,
         experimental_steering: steering,
       });
-      let fullReasoning = "";
-      for await (const part of result.fullStream) {
-        if (part.type === "text-delta") options.onChunk?.(part.text);
-        else if (part.type === "reasoning-delta") {
-          fullReasoning += part.text;
-          options.onReasoningChunk?.(part.text);
-        } else if (part.type === "error") throw part.error;
-      }
+      const fullReasoning = await consumeAgentStream(
+        result.fullStream,
+        options,
+      );
       signal.throwIfAborted();
       text = await result.text;
       reasoning = fullReasoning || undefined;

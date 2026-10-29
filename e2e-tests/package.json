@@ -9,7 +9,8 @@
   "scripts": {
     "test": "bun run --bun playwright test",
     "test:mcp": "bun run --bun playwright test -c playwright.config.mcp.ts",
-    "test:build": "bun verify-plug.ts"
+    "test:build": "bun verify-plug.ts",
+    "test:push": "bun verify-panel-push.ts"
   },
   "keywords": [],
   "author": "",

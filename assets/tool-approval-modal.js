@@ -13,7 +13,9 @@
     if (customStyles) {
       // customStyles is a string of <style> blocks built by SilverBullet core;
       // extract only the CSS text so no other markup can be injected
-      for (const match of customStyles.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)) {
+      for (const match of customStyles.matchAll(
+        /<style[^>]*>([\s\S]*?)<\/style>/gi,
+      )) {
         const styleEl = document.createElement("style");
         styleEl.textContent = match[1];
         document.head.appendChild(styleEl);
@@ -88,7 +90,8 @@
     diffViewEl.innerHTML = "";
 
     if (!diffLines || diffLines.length === 0) {
-      diffViewEl.innerHTML = '<div class="diff-empty">No changes to preview</div>';
+      diffViewEl.innerHTML =
+        '<div class="diff-empty">No changes to preview</div>';
       return;
     }
 
@@ -96,8 +99,15 @@
       const lineEl = document.createElement("div");
       lineEl.className = "diff-line " + line.type;
 
-      const prefix = line.type === "add" ? "+ " : line.type === "remove" ? "- " : "  ";
-      lineEl.textContent = prefix + line.line;
+      const prefix =
+        line.type === "add" ? "+ " : line.type === "remove" ? "- " : "  ";
+      const ending =
+        line.ending === "\r\n"
+          ? " [CRLF]"
+          : line.ending === "" && line.type !== "same"
+            ? " [no final newline]"
+            : "";
+      lineEl.textContent = prefix + line.line + ending;
 
       diffViewEl.appendChild(lineEl);
     }
@@ -115,7 +125,9 @@
     }
 
     // Use appropriate diff function based on approval type
-    const diffFunction = isWriteApproval ? "silverbullet-ai.getWriteDiff" : "silverbullet-ai.getToolDiff";
+    const diffFunction = isWriteApproval
+      ? "silverbullet-ai.getWriteDiff"
+      : "silverbullet-ai.getToolDiff";
 
     try {
       const result = await syscall(
@@ -127,14 +139,16 @@
       if (result && result.diff) {
         renderDiff(result.diff);
       } else if (result && result.error) {
-        diffViewEl.innerHTML = '<div class="diff-empty">' +
-          escapeHtml(result.error) + "</div>";
+        diffViewEl.innerHTML =
+          '<div class="diff-empty">' + escapeHtml(result.error) + "</div>";
       } else {
-        diffViewEl.innerHTML = '<div class="diff-empty">No diff available</div>';
+        diffViewEl.innerHTML =
+          '<div class="diff-empty">No diff available</div>';
       }
     } catch (e) {
       console.error("Failed to load diff:", e);
-      diffViewEl.innerHTML = '<div class="diff-empty">Failed to load diff</div>';
+      diffViewEl.innerHTML =
+        '<div class="diff-empty">Failed to load diff</div>';
     }
   }
 
@@ -142,7 +156,7 @@
     if (responded) return;
     responded = true;
 
-    const feedback = approved ? null : (feedbackInput.value.trim() || null);
+    const feedback = approved ? null : feedbackInput.value.trim() || null;
     const type = isWriteApproval ? "write" : "tool";
 
     try {

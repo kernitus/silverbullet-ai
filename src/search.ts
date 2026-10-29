@@ -1,3 +1,4 @@
+import { createLiteralSearch } from "./literal-search.ts";
 import { rank } from "@silverbulletmd/silverbullet/lib/fuzzy";
 import { space } from "@silverbulletmd/silverbullet/syscalls";
 import { aiSettings, currentEmbeddingProvider } from "./init.ts";
@@ -9,6 +10,16 @@ import type {
   ToolExecutionContext,
 } from "./types.ts";
 import type { ToolExecutionResult } from "./tools.ts";
+
+const literalSearch = createLiteralSearch({
+  listPages: space.listPages,
+  readPage: space.readPage,
+});
+
+export function invalidateNoteSearch(name: string): void {
+  if (typeof name === "string")
+    literalSearch.invalidate(name.endsWith(".md") ? name.slice(0, -3) : name);
+}
 
 export function matchesSearchPath(page: string, path?: string): boolean {
   if (!path) return true;
@@ -30,6 +41,7 @@ export async function searchNotes(
     caseSensitive = false,
     offset = 0,
     surroundingLines = 0,
+    cursor,
   } = args;
   if (typeof query !== "string" || !query.trim() || query.length > 1000)
     return {
@@ -75,6 +87,24 @@ export async function searchNotes(
   if (typeof caseSensitive !== "boolean")
     return { success: false, error: "caseSensitive must be a boolean." };
 
+  if (
+    cursor !== undefined &&
+    (mode !== "text" ||
+      typeof cursor !== "string" ||
+      !/^[0-9a-f-]{36}$/.test(cursor))
+  )
+    return {
+      success: false,
+      error:
+        "cursor must be a text-search continuation returned by search_notes.",
+    };
+  if (mode === "text" && offset !== 0)
+    return {
+      success: false,
+      error:
+        "Text search now uses nextCursor. Repeat the search without offset, then pass cursor with the same query and scope.",
+    };
+
   try {
     if (mode === "semantic") {
       if (!aiSettings?.indexEmbeddings || !currentEmbeddingProvider)
@@ -115,18 +145,27 @@ export async function searchNotes(
       };
     }
 
-    const needle = caseSensitive ? query : query.toLowerCase();
-    const results: {
-      page: string;
-      line: number;
-      snippet: string;
-      context?: string;
-      startLine?: number;
-      endLine?: number;
-    }[] = [];
-    let skipped = 0;
-    let unreadablePages = 0;
-    let truncated = false;
+    if (mode === "text") {
+      // Capture scope values so later caller mutations cannot widen a cursor.
+      const allowedReadPaths = permissions?.allowedReadPaths?.slice();
+      const result = await literalSearch.search({
+        query,
+        caseSensitive,
+        surroundingLines: surroundingLines as number,
+        limit,
+        scopeKey: JSON.stringify([allowedReadPaths ?? null, path ?? null]),
+        acceptsPage: (page) =>
+          isPathAllowed(page, allowedReadPaths) &&
+          matchesSearchPath(page, path as string | undefined),
+        cursor: cursor as string | undefined,
+        abortSignal: context?.abortSignal,
+      });
+      return {
+        success: true,
+        result: JSON.stringify({ mode, ...result }),
+        summary: `Text search returned ${result.results.length} matches${result.truncated ? " (more available)" : ""}`,
+      };
+    }
     const pages = (await space.listPages())
       .filter(
         (p) =>
@@ -157,66 +196,7 @@ export async function searchNotes(
         }),
       };
     }
-    search: for (const page of pages) {
-      context?.abortSignal?.throwIfAborted();
-      let content: string;
-      try {
-        content = await space.readPage(page.name);
-      } catch {
-        unreadablePages++;
-        continue;
-      }
-      context?.abortSignal?.throwIfAborted();
-      const lines = content.split(/\r?\n/);
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const position = (caseSensitive ? line : line.toLowerCase()).indexOf(
-          needle,
-        );
-        if (position < 0) continue;
-        if (skipped++ < (offset as number)) continue;
-        if (results.length === limit) {
-          truncated = true;
-          break search;
-        }
-        const start = Math.max(0, position - 100);
-        results.push({
-          page: page.name,
-          line: i + 1,
-          snippet: line.slice(start, start + 500),
-          ...(surroundingLines
-            ? {
-                startLine: Math.max(0, i - (surroundingLines as number)) + 1,
-                endLine: Math.min(
-                  lines.length,
-                  i + (surroundingLines as number) + 1,
-                ),
-                context: lines
-                  .slice(
-                    Math.max(0, i - (surroundingLines as number)),
-                    i + (surroundingLines as number) + 1,
-                  )
-                  .map(
-                    (text, index) =>
-                      `${Math.max(0, i - (surroundingLines as number)) + index + 1}: ${text.slice(0, 500)}`,
-                  )
-                  .join("\n"),
-              }
-            : {}),
-        });
-      }
-    }
-    return {
-      success: true,
-      result: JSON.stringify({
-        mode,
-        results,
-        truncated,
-        unreadablePages,
-        nextOffset: truncated ? (offset as number) + results.length : null,
-      }),
-      summary: `Text search returned ${results.length} matches${truncated ? " (limit reached)" : ""}`,
-    };
+    return { success: false, error: "Unsupported search mode" };
   } catch (error) {
     return {
       success: false,
@@ -260,7 +240,12 @@ export function buildSearchNotesTool(): LuaToolDefinition {
           minimum: 0,
           maximum: 10000,
           description:
-            "Use nextOffset from the previous result with the same search arguments.",
+            "For title, path and semantic modes, use nextOffset from the previous result. Text mode uses cursor.",
+        },
+        cursor: {
+          type: "string",
+          description:
+            "Text mode: nextCursor from the previous result. Keep query, case, surroundingLines and path unchanged. Expires after five minutes or note changes; then start again without cursor.",
         },
         surroundingLines: {
           type: "integer",

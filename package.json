@@ -9,7 +9,8 @@
     "test:integration": "bun run --bun vitest run --root integration-tests",
     "dist": "bun run build && bun scripts/build-dist.ts",
     "update-readme": "bun scripts/update-readme.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bench:search": "bun scripts/benchmark-note-search.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.107",
@@ -21,6 +22,7 @@
     "@opencoredev/loginwithchatgpt-ai": ">=0.2.0 <1.0.0",
     "@silverbulletmd/silverbullet": "^2.12.0",
     "ai": "^7.0.156",
+    "diff": "^9.0.0",
     "yaml": "^2.9.1"
   },
   "devDependencies": {

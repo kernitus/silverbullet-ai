@@ -166,7 +166,7 @@ test("text search pages matches without duplicates and includes numbered surroun
       })
     ).result!,
   );
-  expect(first.nextOffset).toBe(1);
+  expect(first.nextCursor).toEqual(expect.any(String));
   expect(first.results[0]).toMatchObject({
     line: 2,
     startLine: 1,
@@ -179,7 +179,8 @@ test("text search pages matches without duplicates and includes numbered surroun
         query: "needle",
         path: "Notes",
         limit: 2,
-        offset: first.nextOffset,
+        cursor: first.nextCursor,
+        surroundingLines: 1,
       })
     ).result!,
   );
@@ -187,7 +188,7 @@ test("text search pages matches without duplicates and includes numbered surroun
     ["Notes/A", 3],
     ["Notes/B", 1],
   ]);
-  expect(second.nextOffset).toBe(null);
+  expect(second.nextCursor).toBe(null);
 });
 
 test("title and path search rank names without reading contents or exposing denied paths", async () => {

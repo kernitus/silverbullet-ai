@@ -4,6 +4,11 @@ requiredPermissions:
 assets:
   - "assets/*"
 functions:
+  invalidateNoteSearch:
+    path: src/search.ts:invalidateNoteSearch
+    events:
+      - file:changed
+      - file:deleted
   codexAccountLogin:
     path: src/codex.ts:codexAccountLogin
     command:
@@ -164,16 +169,14 @@ functions:
     path: src/chat-panel.ts:getPanelChatHistory
   resetPanelChatHistory:
     path: src/chat-panel.ts:resetPanelChatHistory
-  getPanelChatChunk:
-    path: src/chat-panel.ts:getPanelChatChunk
+  connectPanelChat:
+    path: src/chat-panel.ts:connectPanelChat
   chatAgentState:
     path: src/chat-panel.ts:chatAgentState
   exportPanelChat:
     path: src/chat-panel.ts:exportPanelChat
   getChatStatus:
     path: src/chat-panel.ts:getChatStatus
-  getPollState:
-    path: src/chat-panel.ts:getPollState
   resetSessionTokenUsage:
     path: src/chat-panel.ts:resetSessionTokenUsage
   toggleReasoningEnabled:
