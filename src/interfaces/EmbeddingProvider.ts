@@ -66,6 +66,7 @@ export abstract class AbstractEmbeddingProvider
   }
 
   async generateEmbeddings(options: EmbeddingGenerationOptions) {
+    options.abortSignal?.throwIfAborted();
     const cacheKey = `ai.embeddingCache.${await hashSHA256(
       JSON.stringify([this.name, this.baseUrl, this.modelName, options.text]),
     )}`;
@@ -73,6 +74,7 @@ export abstract class AbstractEmbeddingProvider
     const cachedEmbedding = (await clientStore.get(cacheKey)) as
       | Array<number>
       | undefined;
+    options.abortSignal?.throwIfAborted();
     if (cachedEmbedding) {
       return cachedEmbedding;
     }

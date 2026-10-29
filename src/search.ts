@@ -2,7 +2,11 @@ import { space } from "@silverbulletmd/silverbullet/syscalls";
 import { aiSettings, currentEmbeddingProvider } from "./init.ts";
 import { searchEmbeddings } from "./embeddings.ts";
 import { isPathAllowed } from "./utils.ts";
-import type { LuaToolDefinition, PathPermissions } from "./types.ts";
+import type {
+  LuaToolDefinition,
+  PathPermissions,
+  ToolExecutionContext,
+} from "./types.ts";
 import type { ToolExecutionResult } from "./tools.ts";
 
 export function matchesSearchPath(page: string, path?: string): boolean {
@@ -14,7 +18,9 @@ export function matchesSearchPath(page: string, path?: string): boolean {
 export async function searchNotes(
   args: Record<string, unknown>,
   permissions?: PathPermissions,
+  context?: ToolExecutionContext,
 ): Promise<ToolExecutionResult> {
+  context?.abortSignal?.throwIfAborted();
   const {
     query,
     mode = "text",
@@ -62,7 +68,9 @@ export async function searchNotes(
       const results = await searchEmbeddings(query, limit, false, {
         allowedReadPaths: permissions?.allowedReadPaths,
         path: path as string | undefined,
+        abortSignal: context?.abortSignal,
       });
+      context?.abortSignal?.throwIfAborted();
       return {
         success: true,
         result: JSON.stringify({
@@ -90,6 +98,7 @@ export async function searchNotes(
       )
       .sort((a, b) => a.name.localeCompare(b.name));
     search: for (const page of pages) {
+      context?.abortSignal?.throwIfAborted();
       let content: string;
       try {
         content = await space.readPage(page.name);
@@ -134,6 +143,7 @@ export function buildSearchNotesTool(): LuaToolDefinition {
     description:
       "Search note contents explicitly. Text mode finds literal text and returns page names, line numbers and snippets, like grep -F. Semantic mode finds related indexed passages and requires embeddings. Use read_note for more context. Results respect the current agent's read permissions.",
     readOnly: true,
+    source: "builtin",
     handler: "",
     parameters: {
       type: "object",

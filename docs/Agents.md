@@ -270,3 +270,13 @@ to `toolsExclude` to disable search for that agent.
 
 1. **Select Agent**: Run `AI: Select Agent` command
 2. **Clear Agent**: Run `AI: Clear Agent` command
+
+## Research subagents and capabilities
+
+The `research_notes` tool delegates a focused question to a separate SDK agent. It searches and reads notes, then returns findings with note and line references. It uses the parent model and inherits read permissions. It cannot edit notes, run Lua, use MCP or spawn another agent. With an explicit `tools` list, include `research_notes`, `search_notes` and `read_note` to enable it. Add `research_notes` to `toolsExclude` to disable it.
+
+Path restrictions are enforced by built-in TypeScript tools. An agent with `allowedReadPaths` or `allowedWritePaths` receives only those built-in tools, because custom Lua and MCP metadata cannot enforce a filesystem sandbox. Restricted agents also skip custom Lua context enrichment and automatic wiki-link expansion. An empty path list grants no access; a folder grants access to that exact note name and its descendants, not similarly named folders.
+
+`eval_lua` is disabled by default. Unrestricted agents may explicitly enable it with `allowUnsafeLua = true` in the agent definition or `ai.chat` configuration. Approval is still required unless the user has explicitly disabled tool approvals. Path restrictions always override the opt-in. Other custom Lua handlers remain trusted code for unrestricted agents; their metadata does not make them safe to run in a restricted agent.
+
+Start a new chat before changing to a restricted agent or changing its path permissions. Previously saved messages may contain information outside the new scope, so the panel refuses to carry that history into the restricted conversation.

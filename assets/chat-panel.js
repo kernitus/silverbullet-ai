@@ -32,6 +32,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 (function () {
   const messagesContainer = document.getElementById("messages");
   const userInput = document.getElementById("user-input");
+  const stopBtn = document.getElementById("stop-btn");
   const sendBtn = document.getElementById("send-btn");
   const newChatBtn = document.getElementById("new-chat-btn");
   const exportBtn = document.getElementById("export-btn");
@@ -294,12 +295,30 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
   async function loadHistory() {
     try {
-      const stored = await syscall("clientStore.get", CHAT_HISTORY_KEY);
+      const stored = await syscall(
+        "system.invokeFunction",
+        "silverbullet-ai.getPanelChatHistory",
+      );
       if (stored && stored.messages) {
         chatData = stored;
         chatHistory = chatData.messages;
         await updateChatStatus();
         await renderAllMessages();
+        if (stored.run?.status === "streaming") {
+          isStreaming = true;
+          currentStreamId = stored.run.id;
+          sendBtn.disabled = true;
+          userInput.disabled = true;
+          stopBtn.hidden = false;
+          const element = await renderMessage("assistant", "", true);
+          void pollForChunks(currentStreamId, element);
+        } else if (stored.run && stored.run.status !== "complete") {
+          await renderMessage(
+            "assistant",
+            stored.run.error ||
+              "The previous turn was interrupted. Completed work has been kept. Continue when ready.",
+          );
+        }
       } else {
         chatData = { id: generateChatId(), messages: [] };
       }
@@ -310,12 +329,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   }
 
   async function saveHistory() {
-    try {
-      chatData.messages = chatHistory;
-      await syscall("clientStore.set", CHAT_HISTORY_KEY, chatData);
-    } catch (e) {
-      console.error("Failed to save chat history:", e);
-    }
+    // The worker persists checkpoints; the iframe must not overwrite them.
+    chatData.messages = chatHistory;
   }
 
   async function renderMessage(role, content, streaming = false) {
@@ -437,9 +452,14 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
           await saveHistory();
           await updateChatStatus();
           break;
-        } else if (result.status === "error") {
+        } else if (result.status === "error" || result.status === "cancelled") {
           isStreaming = false;
-          showChatError(messageEl, result.error || "Unknown error");
+          if (result.messages) {
+            chatHistory = result.messages;
+            await renderAllMessages();
+          }
+          const errorElement = await renderMessage("assistant", "");
+          await showChatError(errorElement, result.error || "Stopped");
           await updateChatStatus();
           break;
         }
@@ -449,32 +469,53 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       } catch (e) {
         console.error("Polling error:", e);
         isStreaming = false;
-        showChatError(messageEl, e.message);
+        await syscall(
+          "system.invokeFunction",
+          "silverbullet-ai.cancelPanelChat",
+          streamId,
+        ).catch(() => {});
+        await showChatError(messageEl, e.message);
         await updateChatStatus();
         break;
       }
     }
 
+    stopBtn.hidden = true;
+    stopBtn.disabled = false;
     sendBtn.disabled = false;
     userInput.disabled = false;
     userInput.placeholder = "Type a message...";
     userInput.focus();
   }
 
-  // Drops the failed user message from history and puts it back in the input
-  function showChatError(messageEl, message) {
+  async function showChatError(messageEl, message) {
+    isStreaming = false;
     messageEl.classList.remove("streaming");
-    userInput.value = chatHistory.pop().content;
     const errorEl = document.createElement("div");
     errorEl.className = "chat-error";
     errorEl.textContent = message;
-    const retryBtn = document.createElement("button");
-    retryBtn.textContent = "Retry";
-    retryBtn.addEventListener("click", () => sendMessage());
-    errorEl.appendChild(retryBtn);
     messageEl.appendChild(errorEl);
+    // A failed turn may have completed edits. Never resubmit it automatically.
+    userInput.value = "";
+    userInput.placeholder = "Continue from the saved conversation...";
     sendBtn.disabled = false;
     userInput.disabled = false;
+    stopBtn.hidden = true;
+  }
+
+  async function stopChat() {
+    if (!currentStreamId) return;
+    stopBtn.disabled = true;
+    try {
+      await syscall(
+        "system.invokeFunction",
+        "silverbullet-ai.cancelPanelChat",
+        currentStreamId,
+      );
+    } catch (error) {
+      stopBtn.disabled = false;
+      console.error("Failed to stop chat:", error);
+    }
   }
 
   async function sendMessage() {
@@ -491,17 +532,21 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     userInput.disabled = true;
 
     const assistantEl = await renderMessage("assistant", "", true);
+    isStreaming = true;
 
     try {
       const result = await syscall(
         "system.invokeFunction",
         "silverbullet-ai.startPanelChat",
         chatHistory,
+        chatData.id,
       );
 
       if (result.streamId) {
         currentStreamId = result.streamId;
         isStreaming = true;
+        stopBtn.hidden = false;
+        stopBtn.disabled = false;
 
         pollForChunks(result.streamId, assistantEl);
       } else if (result.error) {
@@ -516,7 +561,14 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   }
 
   async function newChat() {
-    chatData = { id: generateChatId(), messages: [] };
+    if (isStreaming) return;
+    const id = generateChatId();
+    await syscall(
+      "system.invokeFunction",
+      "silverbullet-ai.resetPanelChatHistory",
+      id,
+    );
+    chatData = { id, messages: [] };
     chatHistory = [];
     await saveHistory();
     await renderAllMessages();
@@ -654,6 +706,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   });
 
   sendBtn.addEventListener("click", sendMessage);
+  stopBtn.addEventListener("click", stopChat);
   newChatBtn.addEventListener("click", newChat);
   exportBtn.addEventListener("click", exportChat);
   closeBtn.addEventListener("click", closePanel);

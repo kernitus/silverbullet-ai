@@ -176,3 +176,22 @@ test("explicit skipToolApproval still allows direct writes", async () => {
   expect(approvalId).toBe("");
   expect(writes).toEqual(["proposed"]);
 });
+
+test("cancelling a run dismisses its approval and prevents a later write", async () => {
+  const { registerRun } = await import("./execution.ts");
+  const controller = new AbortController();
+  const unregister = registerRun("cancel-test", controller.signal);
+  try {
+    const result = requestWriteApproval("Note", "proposed", "cancel-test");
+    await vi.waitFor(() => expect(approvalId).not.toBe(""));
+    controller.abort(new DOMException("Stopped", "AbortError"));
+    expect(await result).toMatchObject({
+      success: false,
+      error: expect.stringContaining("cancelled"),
+    });
+    await submitApproval("write", approvalId, true);
+    expect(writes).toEqual([]);
+  } finally {
+    unregister();
+  }
+});

@@ -854,6 +854,7 @@ export async function testEmbeddingGeneration() {
     await editor.flashNotification("No text entered.", "error");
     return;
   }
+  if (!currentEmbeddingProvider) throw new Error("No embedding model configured");
   const embedding = await currentEmbeddingProvider.generateEmbeddings({
     text: text,
   });

@@ -78,6 +78,14 @@ try {
       if (name === "markdown.markdownToHtml") return args[0];
       if (name !== "system.invokeFunction") return undefined;
       switch (args[0]) {
+        case "silverbullet-ai.getPanelChatHistory":
+          return store["ai.panelChatHistory.sdk.v1"];
+        case "silverbullet-ai.resetPanelChatHistory":
+          store["ai.panelChatHistory.sdk.v1"] = { id: args[1], messages: [] };
+          return;
+        case "silverbullet-ai.cancelPanelChat":
+          (globalThis as any).stopCalled = true;
+          return;
         case "silverbullet-ai.getChatStatus":
           return {
             reasoning: { enabled: false },
@@ -92,9 +100,22 @@ try {
           (globalThis as any).submittedMessages.push(
             JSON.parse(JSON.stringify(args[1])),
           );
+          store["ai.panelChatHistory.sdk.v1"] = {
+            id: args[2],
+            messages: JSON.parse(JSON.stringify(args[1])),
+          };
           return { streamId: "test-stream" };
-        case "silverbullet-ai.getPanelChatChunk":
-          return {
+        case "silverbullet-ai.getPanelChatChunk": {
+          if ((globalThis as any).holdRun)
+            return (globalThis as any).stopCalled
+              ? {
+                  chunks: [],
+                  status: "cancelled",
+                  error: "Stopped. Completed work has been kept.",
+                  messages: store["ai.panelChatHistory.sdk.v1"].messages,
+                }
+              : { chunks: [], status: "streaming" };
+          const result = {
             chunks: ["Search is available through tools."],
             status: "complete",
             messages: [
@@ -136,6 +157,9 @@ try {
               },
             ],
           };
+          store["ai.panelChatHistory.sdk.v1"].messages = result.messages;
+          return result;
+        }
         case "silverbullet-ai.postProcessToolCallHtml":
           return args[1];
         default:
@@ -189,6 +213,24 @@ try {
   );
   assert.deepEqual(submitted.slice(0, -1), saved);
   assert.deepEqual(submitted.at(-1), { role: "user", content: "Continue" });
+  await panel.waitForFunction(
+    () => !(document.getElementById("send-btn") as HTMLButtonElement).disabled,
+  );
+  await panel.evaluate(() => {
+    (globalThis as any).holdRun = true;
+  });
+  await panel.locator("#user-input").fill("Research a large topic");
+  await panel.locator("#send-btn").click();
+  await panel.locator("#stop-btn").click();
+  await panel.waitForFunction(
+    () => !(document.getElementById("send-btn") as HTMLButtonElement).disabled,
+  );
+  assert.equal(
+    await panel.evaluate(() => (globalThis as any).stopCalled),
+    true,
+  );
+  assert.equal(await panel.locator("#stop-btn").isVisible(), false);
+  assert.equal(await panel.locator("#user-input").inputValue(), "");
   assert.deepEqual(panelErrors, []);
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",

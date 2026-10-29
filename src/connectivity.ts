@@ -436,6 +436,7 @@ Use these commands to select your models:
           text += "### 🧮 Embedding Generation\n\n";
           try {
             const testText = "This is a connectivity test.";
+            if (!currentEmbeddingProvider) throw new Error("No embedding model configured");
             const embeddings = await currentEmbeddingProvider
               .generateEmbeddings({ text: testText });
             if (embeddings && embeddings.length > 0) {

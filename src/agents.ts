@@ -1,3 +1,4 @@
+import { isRestricted } from "./capabilities.ts";
 import { editor, index, lua, space } from "@silverbulletmd/silverbullet/syscalls";
 import type { AIAgentTemplate, Attachment, LuaToolDefinition } from "./types.ts";
 import { isPathAllowed, log, luaLongString } from "./utils.ts";
@@ -23,6 +24,7 @@ export async function discoverAgents(): Promise<AIAgentTemplate[]> {
         tools?: string[];
         toolsExclude?: string[];
         inheritBasePrompt?: boolean;
+        allowUnsafeLua?: boolean;
         allowedReadPaths?: string[];
         allowedWritePaths?: string[];
       }
@@ -39,6 +41,7 @@ export async function discoverAgents(): Promise<AIAgentTemplate[]> {
             tools: agent.tools,
             toolsExclude: agent.toolsExclude,
             inheritBasePrompt: agent.inheritBasePrompt,
+            allowUnsafeLua: agent.allowUnsafeLua,
             allowedReadPaths: agent.allowedReadPaths,
             allowedWritePaths: agent.allowedWritePaths,
           },
@@ -151,6 +154,7 @@ export async function buildAgentSystemPrompt(
     const pageContent = await space.readPage(agent._pagePath);
     const bodyContent = extractBodyContent(pageContent);
 
+    if (isRestricted(agent.aiagent)) return { systemPrompt: fullPrompt + "\n\n" + bodyContent, attachments: [] };
     if (bodyContent.trim()) {
       try {
         const result = await lua.evalExpression(

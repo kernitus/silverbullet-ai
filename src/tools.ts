@@ -1,6 +1,5 @@
 import {
-  generateText,
-  streamText,
+  ToolLoopAgent,
   isStepCount,
   type ModelMessage,
   type ToolSet,
@@ -27,6 +26,7 @@ import type {
   JsonSchemaObject,
   LuaToolDefinition,
   PathPermissions,
+  ToolExecutionContext,
   Tool,
   Usage,
 } from "./types.ts";
@@ -37,6 +37,16 @@ import {
   supportedAttachmentKinds,
 } from "./init.ts";
 import { discoverMCPTools, executeMCPTool } from "./mcp/index.ts";
+import { createContextManager, boundedToolOutput } from "./context.ts";
+import { researchTool } from "./research.ts";
+import { buildReadNoteTool } from "./note-tools.ts";
+import { canUseTool, filterCapabilities } from "./capabilities.ts";
+import {
+  registerRun,
+  signalForRun,
+  type RunCheckpoint,
+  type PendingTool,
+} from "./execution.ts";
 import { buildSearchNotesTool } from "./search.ts";
 import { buildSkillTool, discoverSkills, SKILL_TOOL_NAME } from "./skills.ts";
 
@@ -84,6 +94,8 @@ type ApprovalResult = {
 };
 
 type PendingApproval = {
+  signal?: AbortSignal;
+  cleanup?: () => void;
   submitting?: boolean;
   resolve: (result: ApprovalResult) => void;
   toolName: string;
@@ -93,6 +105,8 @@ type PendingApproval = {
 const pendingApprovals = new Map<string, PendingApproval>();
 
 type PendingWrite = {
+  signal?: AbortSignal;
+  cleanup?: () => void;
   submitting?: boolean;
   resolve: (result: ApprovalResult) => void;
   page: string;
@@ -202,6 +216,7 @@ export async function discoverTools(): Promise<Map<string, LuaToolDefinition>> {
               parameters = tool.parameters,
               requiresApproval = tool.requiresApproval or false,
               readOnly = tool.readOnly or false,
+              unsafeLua = tool.unsafeLua or false,
               readPathParam = tool.readPathParam,
               writePathParam = tool.writePathParam
             }
@@ -212,6 +227,7 @@ export async function discoverTools(): Promise<Map<string, LuaToolDefinition>> {
           parameters: LuaToolDefinition["parameters"];
           requiresApproval?: boolean;
           readOnly?: boolean;
+          unsafeLua?: boolean;
           readPathParam?: string;
           writePathParam?: string;
         } | null;
@@ -223,6 +239,7 @@ export async function discoverTools(): Promise<Map<string, LuaToolDefinition>> {
             handler: name,
             requiresApproval: metadata.requiresApproval === true,
             readOnly: metadata.readOnly === true,
+            unsafeLua: metadata.unsafeLua === true,
             readPathParam: metadata.readPathParam,
             writePathParam: metadata.writePathParam,
           });
@@ -257,6 +274,7 @@ export async function discoverAllTools(): Promise<
     discoverSkills(),
   ]);
   tools.set("search_notes", buildSearchNotesTool());
+  tools.set("read_note", buildReadNoteTool());
   for (const [name, def] of mcpTools) {
     tools.set(name, def);
   }
@@ -295,7 +313,9 @@ export async function callTool(
         error: approval.feedback || "Tool rejected by user",
       };
   }
-  return await executeTool(toolName, args ?? {}, luaTools);
+  return await executeTool(toolName, args ?? {}, luaTools, {
+    allowUnsafeLua: aiSettings?.chat?.allowUnsafeLua,
+  });
 }
 
 /**
@@ -406,7 +426,9 @@ export async function executeTool(
   args: Record<string, unknown>,
   luaTools: Map<string, LuaToolDefinition>,
   permissions?: PathPermissions,
+  context?: ToolExecutionContext,
 ): Promise<ToolExecutionResult> {
+  context?.abortSignal?.throwIfAborted();
   const tool = luaTools.get(toolName);
 
   if (!tool) {
@@ -416,6 +438,8 @@ export async function executeTool(
     };
   }
 
+  if (!canUseTool(toolName, tool, permissions))
+    return { success: false, error: "Tool capability denied for this agent" };
   const permCheck = validatePathPermission(tool, args, permissions);
   if (!permCheck.allowed) {
     return { success: false, error: permCheck.error };
@@ -423,17 +447,22 @@ export async function executeTool(
 
   // MCP-sourced tools execute over HTTP instead of through a Lua handler.
   if (tool.source === "mcp") {
-    return await executeMCPTool(tool, args, aiSettings?.mcpServers);
+    return await executeMCPTool(
+      tool,
+      args,
+      aiSettings?.mcpServers,
+      context?.abortSignal,
+    );
   }
   if (tool.execute) {
-    return await tool.execute(args, permissions);
+    return await tool.execute(args, permissions, context);
   }
 
   try {
     const luaArgs = toLuaLiteral(args);
     const toolNameLiteral = toLuaStringLiteral(toolName);
     const result = await lua.evalExpression(
-      `ai.tools[${toolNameLiteral}].handler(${luaArgs})`,
+      `ai.tools[${toolNameLiteral}].handler(${luaArgs}, ${toLuaLiteral({ runId: context?.runId })})`,
     );
 
     if (
@@ -471,6 +500,25 @@ export async function executeTool(
   }
 }
 
+function bindApprovalAbort(
+  id: string,
+  pending: PendingApproval | PendingWrite,
+  map: Map<string, any>,
+): void {
+  const signal = pending.signal;
+  if (!signal) return;
+  const cancel = () => {
+    if (pending.submitting) return;
+    map.delete(id);
+    pending.cleanup?.();
+    pending.resolve({ approved: false, feedback: "Execution cancelled" });
+    void editor.hidePanel("modal").catch(() => {});
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  pending.cleanup = () => signal.removeEventListener("abort", cancel);
+  if (signal.aborted) cancel();
+}
+
 /**
  * Requests user approval before executing a tool using a custom modal.
  * Note: For tools that write pages, use ai.writePage() in Lua which shows a diff preview.
@@ -478,7 +526,9 @@ export async function executeTool(
 function requestToolApproval(
   toolName: string,
   args: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ApprovalResult> {
+  signal?.throwIfAborted();
   if (pendingApprovals.size || pendingWrites.size) {
     return Promise.resolve({
       approved: false,
@@ -488,7 +538,9 @@ function requestToolApproval(
   const approvalId = `approval_${Date.now()}_${crypto.randomUUID()}`;
 
   return new Promise((resolve, reject) => {
-    pendingApprovals.set(approvalId, { resolve, toolName, args });
+    const pending: PendingApproval = { resolve, toolName, args, signal };
+    pendingApprovals.set(approvalId, pending);
+    bindApprovalAbort(approvalId, pending, pendingApprovals);
 
     (async () => {
       try {
@@ -506,10 +558,13 @@ function requestToolApproval(
         ${script}
       `;
 
+        signal?.throwIfAborted();
         await editor.showPanel("modal", 20, html, initScript);
+        if (signal?.aborted) await editor.hidePanel("modal");
       } catch (e) {
         log.error("Error showing tool approval modal:", e);
         pendingApprovals.delete(approvalId);
+        pending.cleanup?.();
         reject(e);
       }
     })();
@@ -531,6 +586,7 @@ export async function submitApproval(
   if (!pending || pending.submitting) return;
   pending.submitting = true;
   try {
+    pending.signal?.throwIfAborted();
     await editor.hidePanel("modal");
     if (type === "write" && approved) {
       const write = pending as PendingWrite;
@@ -543,6 +599,7 @@ export async function submitApproval(
         });
         return;
       }
+      pending.signal?.throwIfAborted();
       await space.writePage(write.page, write.newContent);
     }
     pending.resolve({ approved, feedback });
@@ -552,6 +609,7 @@ export async function submitApproval(
       feedback: `Approval failed: ${error instanceof Error ? error.message : String(error)}`,
     });
   } finally {
+    pending.cleanup?.();
     if (type === "tool") pendingApprovals.delete(id);
     else pendingWrites.delete(id);
   }
@@ -569,7 +627,10 @@ async function readWriteSnapshot(page: string): Promise<string | null> {
 export async function requestWriteApproval(
   page: string,
   newContent: string,
+  runId?: string,
 ): Promise<{ success: boolean; error?: string }> {
+  const signal = signalForRun(runId);
+  signal?.throwIfAborted();
   if (aiSettings?.chat?.skipToolApproval) {
     await space.writePage(page, newContent);
     return { success: true };
@@ -589,7 +650,8 @@ export async function requestWriteApproval(
     };
   }
   return new Promise((resolve, reject) => {
-    pendingWrites.set(writeId, {
+    const pending: PendingWrite = {
+      signal,
       resolve: (result) => {
         if (result.approved) {
           resolve({ success: true });
@@ -606,7 +668,9 @@ export async function requestWriteApproval(
       newContent,
       currentContent,
       diff,
-    });
+    };
+    pendingWrites.set(writeId, pending);
+    bindApprovalAbort(writeId, pending, pendingWrites);
 
     (async () => {
       try {
@@ -630,10 +694,13 @@ export async function requestWriteApproval(
         ${script}
       `;
 
+        signal?.throwIfAborted();
         await editor.showPanel("modal", 20, html, initScript);
+        if (signal?.aborted) await editor.hidePanel("modal");
       } catch (e) {
         log.error("Error showing write approval modal:", e);
         pendingWrites.delete(writeId);
+        pending.cleanup?.();
         reject(e);
       }
     })();
@@ -763,14 +830,17 @@ async function processToolCalls(
     result: ToolExecutionResult,
   ) => void,
   permissions?: PathPermissions,
+  context?: ToolExecutionContext,
 ): Promise<{
   toolCallsText: string;
   toolMessages: ChatMessage[];
   attachmentMessages: ChatMessage[];
+  writeOutcomeUncertain: boolean;
 }> {
   let toolCallsText = "";
   const toolMessages: ChatMessage[] = [];
   const attachPaths: string[] = [];
+  let writeOutcomeUncertain = false;
   const emitToolCall = onToolCall ?? (() => {});
 
   for (const toolCall of toolCalls) {
@@ -809,7 +879,11 @@ async function processToolCalls(
 
     const toolDef = luaTools.get(toolName);
     if (toolRequiresApproval(toolDef, aiSettings?.chat?.skipToolApproval)) {
-      const approvalResult = await requestToolApproval(toolName, args);
+      const approvalResult = await requestToolApproval(
+        toolName,
+        args,
+        context?.abortSignal,
+      );
       if (!approvalResult.approved) {
         const feedbackMsg = approvalResult.feedback
           ? `User feedback: ${approvalResult.feedback}`
@@ -842,10 +916,17 @@ async function processToolCalls(
       }
     }
 
-    const result = await executeTool(toolName, args, luaTools, permissions);
+    const result = await executeTool(
+      toolName,
+      args,
+      luaTools,
+      permissions,
+      context,
+    );
+    if (!result.success && !toolDef?.readOnly) writeOutcomeUncertain = true;
     const fullResult = result.success
       ? result.result || ""
-      : `Error: ${result.error}`;
+      : `Error: ${result.error}${!toolDef?.readOnly ? " The operation may have had effects. Verify the current state before repeating any write or external action." : ""}`;
 
     // Cache full result for later retrieval
     if (result.success && fullResult) {
@@ -891,7 +972,12 @@ async function processToolCalls(
     attachPaths,
     permissions,
   );
-  return { toolCallsText, toolMessages, attachmentMessages };
+  return {
+    toolCallsText,
+    toolMessages,
+    attachmentMessages,
+    writeOutcomeUncertain,
+  };
 }
 
 export type AgenticChatOptions = {
@@ -906,6 +992,10 @@ export type AgenticChatOptions = {
   ) => void;
   maxIterations?: number;
   permissions?: PathPermissions;
+  abortSignal?: AbortSignal;
+  runId?: string;
+  onCheckpoint?: (checkpoint: RunCheckpoint) => Promise<void>;
+  enableResearch?: boolean;
 };
 
 export type AgenticChatResult = {
@@ -941,10 +1031,11 @@ async function runSDKChat(
     provider,
     messages,
     luaTools,
-    permissions,
+    permissions = { allowUnsafeLua: aiSettings?.chat?.allowUnsafeLua },
     onToolCall,
     maxIterations = MAX_TOOL_ITERATIONS,
   } = options;
+  options.abortSignal?.throwIfAborted();
   if (!provider.languageModel) {
     // The local mock provider is used by SilverBullet's development fixtures.
     const response = streaming
@@ -964,10 +1055,62 @@ async function runSDKChat(
   let toolCallsText = "";
   let pendingAttachments: ChatMessage[] = [];
   const responseMessages: ModelMessage[] = [];
-  const sdkTools = toSDKTools(options.tools);
+  const permitted = filterCapabilities(luaTools, permissions);
+  const sdkTools = toSDKTools(
+    options.tools.filter((tool) => permitted.has(tool.function.name)),
+  );
+  const runId = options.runId ?? crypto.randomUUID();
+  const signal = options.abortSignal ?? new AbortController().signal;
+  const interimMessages: ModelMessage[] = [];
+  let inFlight: PendingTool | undefined;
+  let checkpointFailure: Error | undefined;
+  const checkpoint = async () => {
+    if (checkpointFailure) throw checkpointFailure;
+    try {
+      await options.onCheckpoint?.({
+        messages: [...messages, ...responseMessages, ...interimMessages],
+        inFlight,
+      });
+    } catch (cause) {
+      checkpointFailure = new Error(
+        "Could not persist the tool checkpoint. Execution stopped before any further actions.",
+        { cause },
+      );
+      throw checkpointFailure;
+    }
+  };
+  let extraUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+  const accountUsage = (usage: import("ai").LanguageModelUsage) => {
+    extraUsage.inputTokens += usage.inputTokens ?? 0;
+    extraUsage.outputTokens += usage.outputTokens ?? 0;
+    extraUsage.totalTokens += usage.totalTokens ?? 0;
+  };
+  const prepareContext = createContextManager({
+    model: provider.languageModel,
+    providerOptions: provider.providerOptions,
+    abortSignal: signal,
+    maxChars: aiSettings?.chat?.contextMaxChars,
+    onUsage: accountUsage,
+  });
   let executedTools = false;
+  let stopAfterToolError = false;
   for (const [name, definition] of Object.entries(sdkTools)) {
-    definition.execute = async (input, { toolCallId }) => {
+    definition.toModelOutput = ({ output }: { output: unknown }) => ({
+      type: "text" as const,
+      value: boundedToolOutput(
+        String(output),
+        aiSettings?.chat?.toolResultMaxChars ?? 12000,
+      ),
+    });
+    definition.execute = async (input, { toolCallId, abortSignal }) => {
+      signal.throwIfAborted();
+      if (checkpointFailure) throw checkpointFailure;
+      if (stopAfterToolError)
+        throw new Error(
+          "A previous write failed. Verify its outcome before further actions.",
+        );
+      inFlight = { toolCallId, toolName: name, input };
+      await checkpoint();
       executedTools = true;
       const processed = await processToolCalls(
         [
@@ -979,7 +1122,9 @@ async function runSDKChat(
         luaTools,
         onToolCall,
         permissions,
+        { abortSignal: abortSignal ?? signal, runId },
       );
+      stopAfterToolError ||= processed.writeOutcomeUncertain;
       toolCallsText += processed.toolCallsText;
       pendingAttachments.push(...processed.attachmentMessages);
       const result = processed.toolMessages[0];
@@ -987,8 +1132,41 @@ async function runSDKChat(
         result?.role === "tool" && result.content[0]?.type === "tool-result"
           ? result.content[0].output
           : undefined;
-      return output?.type === "text" ? output.value : "";
+      const value = output?.type === "text" ? output.value : "";
+      interimMessages.push(
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId, toolName: name, input }],
+        },
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId,
+              toolName: name,
+              output: { type: "text", value },
+            },
+          ],
+        },
+      );
+      inFlight = undefined;
+      await checkpoint();
+      return value;
     };
+  }
+  if (
+    options.enableResearch !== false &&
+    permitted.has("search_notes") &&
+    permitted.has("read_note")
+  ) {
+    sdkTools.research_notes = researchTool({
+      model: provider.languageModel,
+      providerOptions: provider.providerOptions,
+      permissions,
+      maxSteps: aiSettings?.chat?.researchMaxSteps,
+      onUsage: accountUsage,
+    });
   }
   const settings = {
     model: provider.languageModel,
@@ -1000,14 +1178,28 @@ async function runSDKChat(
     stopWhen: isStepCount(maxIterations),
     // Serial execution preserves note edit order and approval dialogue order.
     toolCallConcurrency: 1,
-    prepareStep: ({ messages: sdkMessages }: { messages: ModelMessage[] }) => {
+    prepareStep: async ({
+      messages: sdkMessages,
+    }: {
+      messages: ModelMessage[];
+    }) => {
+      if (checkpointFailure) throw checkpointFailure;
+      if (stopAfterToolError)
+        throw new Error(
+          "A tool that can modify data failed. Completed work has been saved. Verify its outcome before continuing; the operation has not been retried.",
+        );
       const attachments = pendingAttachments;
       pendingAttachments = [];
       responseMessages.push(...attachments);
-      return { messages: [...sdkMessages, ...attachments] };
+      return {
+        messages: await prepareContext([...sdkMessages, ...attachments]),
+      };
     },
-    onStepEnd: (step: import("ai").StepResult<ToolSet>) => {
+    onStepEnd: async (step: import("ai").StepResult<ToolSet>) => {
       responseMessages.push(...step.response.messages);
+      interimMessages.length = 0;
+      inFlight = undefined;
+      await checkpoint();
     },
   };
   const execute = async (tools: ToolSet): Promise<AgenticChatResult> => {
@@ -1016,7 +1208,12 @@ async function runSDKChat(
     let usage;
     let finishReason;
     if (streaming) {
-      const result = streamText({ ...settings, tools });
+      const { messages: inputMessages, ...agentSettings } = settings;
+      const agent = new ToolLoopAgent({ ...agentSettings, tools });
+      const result = await agent.stream({
+        messages: inputMessages,
+        abortSignal: signal,
+      });
       let fullReasoning = "";
       for await (const part of result.fullStream) {
         if (part.type === "text-delta") options.onChunk?.(part.text);
@@ -1025,12 +1222,18 @@ async function runSDKChat(
           options.onReasoningChunk?.(part.text);
         } else if (part.type === "error") throw part.error;
       }
+      signal.throwIfAborted();
       text = await result.text;
       reasoning = fullReasoning || undefined;
       usage = await result.totalUsage;
       finishReason = await result.finishReason;
     } else {
-      const result = await generateText({ ...settings, tools });
+      const { messages: inputMessages, ...agentSettings } = settings;
+      const agent = new ToolLoopAgent({ ...agentSettings, tools });
+      const result = await agent.generate({
+        messages: inputMessages,
+        abortSignal: signal,
+      });
       text = result.text;
       reasoning = result.reasoningText;
       usage = result.totalUsage;
@@ -1051,9 +1254,14 @@ async function runSDKChat(
       finalResponse: text,
       finalReasoning: reasoning,
       toolCallsText,
-      usage: toUsage(usage),
+      usage: {
+        prompt_tokens: (usage.inputTokens ?? 0) + extraUsage.inputTokens,
+        completion_tokens: (usage.outputTokens ?? 0) + extraUsage.outputTokens,
+        total_tokens: (usage.totalTokens ?? 0) + extraUsage.totalTokens,
+      },
     };
   };
+  const unregister = registerRun(runId, signal);
   try {
     return await execute(sdkTools);
   } catch (error) {
@@ -1071,6 +1279,8 @@ async function runSDKChat(
       "info",
     );
     responseMessages.length = 0;
-    return execute({});
+    return await execute({});
+  } finally {
+    unregister();
   }
 }

@@ -45,11 +45,15 @@ export class MCPClient {
   async callTool(
     name: string,
     args: Record<string, unknown>,
+    signal?: AbortSignal,
   ): Promise<McpCallToolResult> {
-    return (await this.connect()).callTool({
+    signal?.throwIfAborted();
+    const client = await this.connect();
+    signal?.throwIfAborted();
+    return client.callTool({
       name,
       arguments: args,
-      options: { timeout: this.config.timeout ?? 60000 },
+      options: { timeout: this.config.timeout ?? 60000, signal },
     });
   }
 

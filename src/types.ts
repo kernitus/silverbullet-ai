@@ -18,6 +18,7 @@ export type ResponseFormat =
 
 export type StreamChatOptions = {
   messages: Array<ChatMessage>;
+  abortSignal?: AbortSignal;
   tools?: Tool[];
   response_format?: ResponseFormat;
   onChunk?: (chunk: string) => void;
@@ -49,6 +50,7 @@ export type ImageGenerationOptions = {
 
 export type EmbeddingGenerationOptions = {
   text: string;
+  abortSignal?: AbortSignal;
 };
 
 export type EmbeddingObject = ObjectValue<
@@ -166,9 +168,10 @@ export type LuaToolDefinition = {
   handler: string; // Lua function reference (unused for MCP tools)
   requiresApproval?: boolean;
   readOnly?: boolean;
+  unsafeLua?: boolean;
   readPathParam?: string | string[];
   writePathParam?: string | string[];
-  source?: "lua" | "mcp" | "skill";
+  source?: "lua" | "mcp" | "skill" | "builtin";
   mcpServer?: string;
   mcpToolName?: string;
   trusted?: boolean;
@@ -176,6 +179,7 @@ export type LuaToolDefinition = {
   execute?: (
     args: Record<string, unknown>,
     permissions?: PathPermissions,
+    context?: ToolExecutionContext,
   ) => Promise<ToolExecutionResult>;
 };
 
@@ -189,12 +193,20 @@ export type AIAgentTemplate = {
     tools?: string[];
     toolsExclude?: string[];
     inheritBasePrompt?: boolean;
+    allowUnsafeLua?: boolean;
     allowedReadPaths?: string[];
     allowedWritePaths?: string[];
   };
 };
 
+export type ToolExecutionContext = {
+  abortSignal?: AbortSignal;
+  runId?: string;
+};
+
 export type PathPermissions = {
+  allowUnsafeLua?: boolean;
+  readOnly?: boolean;
   allowedReadPaths?: string[];
   allowedWritePaths?: string[];
 };
@@ -224,6 +236,10 @@ export enum EmbeddingProvider {
 }
 
 export type ChatSettings = {
+  allowUnsafeLua?: boolean;
+  contextMaxChars?: number;
+  toolResultMaxChars?: number;
+  researchMaxSteps?: number;
   userInformation: string;
   userInstructions: string;
   customContext: string;

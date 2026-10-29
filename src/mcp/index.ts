@@ -155,6 +155,7 @@ export async function executeMCPTool(
   toolDef: LuaToolDefinition,
   args: Record<string, unknown>,
   servers: MCPServersConfig | undefined,
+  signal?: AbortSignal,
 ): Promise<ToolExecutionResult> {
   const serverName = toolDef.mcpServer;
   const realName = toolDef.mcpToolName;
@@ -175,7 +176,7 @@ export async function executeMCPTool(
   const client = clientFor(serverName, config);
 
   try {
-    const result = await client.callTool(realName, args);
+    const result = await client.callTool(realName, args, signal);
     return mapCallResultToExecution(result);
   } catch (e) {
     return {

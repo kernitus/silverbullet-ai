@@ -229,6 +229,7 @@ export async function indexEmbeddings(page: string) {
   }
 
   // batch generate embeddings for all chunks
+  if (!currentEmbeddingProvider) throw new Error("No embedding model configured");
   const texts = chunks.map((c) => c.contextualText);
   const embeddings =
     await currentEmbeddingProvider.generateEmbeddingsBatch(texts);
@@ -305,6 +306,7 @@ export async function indexSummary(page: string) {
     await clientStore.set(cacheKey, summary);
   }
 
+  if (!currentEmbeddingProvider) throw new Error("No embedding model configured");
   const summaryEmbeddings = await currentEmbeddingProvider.generateEmbeddings({
     text: summary,
   });
@@ -382,12 +384,12 @@ export async function getAllAISummaries(): Promise<AISummaryObject[]> {
   return await index.queryLuaObjects<AISummaryObject>("aiSummary", {});
 }
 
-export async function generateEmbeddings(text: string): Promise<number[]> {
+export async function generateEmbeddings(text: string, abortSignal?: AbortSignal): Promise<number[]> {
   await initIfNeeded();
   if (!currentEmbeddingProvider || !currentEmbeddingModel) {
     throw new Error("No embedding provider found");
   }
-  return await currentEmbeddingProvider.generateEmbeddings({ text });
+  return await currentEmbeddingProvider.generateEmbeddings({ text, abortSignal });
 }
 
 /**
@@ -398,7 +400,7 @@ export async function searchEmbeddings(
   query: string | number[],
   numResults = 10,
   updateEditorProgress = false,
-  scope?: { allowedReadPaths?: string[]; path?: string },
+  scope?: { allowedReadPaths?: string[]; path?: string; abortSignal?: AbortSignal },
 ): Promise<EmbeddingResult[]> {
   await initIfNeeded();
 
@@ -410,7 +412,7 @@ export async function searchEmbeddings(
   // Generate a query vector only when the caller supplied text.
   const startEmbeddingGeneration = Date.now();
   const queryEmbedding =
-    typeof query === "string" ? await generateEmbeddings(query) : query;
+    typeof query === "string" ? await generateEmbeddings(query, scope?.abortSignal) : query;
   const endEmbeddingGeneration = Date.now();
   log.debug(
     `searchEmbeddings: Query embedding generation took ${endEmbeddingGeneration - startEmbeddingGeneration} ms`,

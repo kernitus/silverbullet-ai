@@ -168,9 +168,10 @@ export class SDKProvider extends AbstractProvider {
   }
 
   async streamChat(options: StreamChatOptions): Promise<ChatResponse> {
-    const result = streamText(
-      this.options(options.messages, options.tools, options.response_format),
-    );
+    const result = streamText({
+      ...this.options(options.messages, options.tools, options.response_format),
+      abortSignal: options.abortSignal,
+    });
     for await (const part of result.fullStream) {
       if (part.type === "text-delta") options.onChunk?.(part.text);
       else if (part.type === "reasoning-delta")
@@ -243,15 +244,25 @@ export class SDKEmbeddingProvider extends AbstractEmbeddingProvider {
     );
     this.model = sdkProvider(connection).embeddingModel(modelName);
   }
-  async _generateEmbeddings({ text }: { text: string }) {
-    return (await this._generateEmbeddingsBatch([text]))[0];
+  async _generateEmbeddings({
+    text,
+    abortSignal,
+  }: {
+    text: string;
+    abortSignal?: AbortSignal;
+  }) {
+    return (await this._generateEmbeddingsBatch([text], abortSignal))[0];
   }
-  override async _generateEmbeddingsBatch(texts: string[]) {
+  override async _generateEmbeddingsBatch(
+    texts: string[],
+    abortSignal?: AbortSignal,
+  ) {
     if (!texts.length) return [];
     return (
       await embedMany({
         model: this.model,
         values: texts,
+        abortSignal,
         maxRetries: 0,
         maxParallelCalls: 1,
       })

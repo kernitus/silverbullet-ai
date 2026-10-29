@@ -146,6 +146,12 @@ functions:
       mac: "Cmd-Shift-a"
   startPanelChat:
     path: src/chat-panel.ts:startPanelChat
+  cancelPanelChat:
+    path: src/chat-panel.ts:cancelPanelChat
+  getPanelChatHistory:
+    path: src/chat-panel.ts:getPanelChatHistory
+  resetPanelChatHistory:
+    path: src/chat-panel.ts:resetPanelChatHistory
   getPanelChatChunk:
     path: src/chat-panel.ts:getPanelChatChunk
   chatAgentState:

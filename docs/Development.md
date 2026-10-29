@@ -64,7 +64,7 @@ OpenAI text requests use the SDK's Responses adapter by default. Provider or mod
 configuration can select `api = "responses"` for compatible gateways or
 `api = "chat"` for endpoints that require Chat Completions. Responses requests
 use `store: false`; the SDK replays reasoning and tool results between steps.
-`src/providers/messages.ts` converts saved conversations and validates tool inputs.
+`src/providers/messages.ts` validates tool inputs. Conversations use SDK `ModelMessage` arrays directly.
 `src/providers/catalog.ts` retains model listing and Ollama metadata queries,
 which are separate from the SDK's inference APIs. MCP uses `@ai-sdk/mcp`.
 
@@ -171,3 +171,31 @@ If you want to see changes in real-time, open up two terminals and run these two
 The first starts a local development server of mkdocs. The second uses the [entr](https://github.com/eradman/entr) command to run silverbullet-pub every time a file changes inside the silverbullet docs/ directory.
 
 Markdown files inside of docs/ can also be manually edited using any editor.
+# Implementation guidance
+
+Check current official library documentation and the installed APIs before adding custom infrastructure. Prefer maintained libraries over reimplementing their capabilities, and use Vercel AI SDK for model transport, streaming, agent loops, subagents, cancellation, context preparation, messages and MCP. Keep custom code focused on SilverBullet integration and its permission and persistence boundaries.
+
+Evaluate dependencies for maintenance, licence, security, runtime compatibility and bundle cost. Validate behaviour with focused tests and the browser build check where relevant. See [AGENTS.md](../AGENTS.md) for repository-wide guidance.
+
+
+## Agent execution and recovery
+
+The shared runtime uses Vercel AI SDK `ToolLoopAgent`, `prepareStep`, `pruneMessages`, SDK tool output conversion and cancellation signals. The assistant panel checkpoints SDK messages after each step, and records tool starts and completed results before proceeding. Checkpoint failures stop further actions. A failed tool that may modify data stops the loop, including the remaining calls in that batch.
+
+Use **Stop** to cancel model requests, research subagents, MCP calls and pending approvals. Completed actions are retained. Cancellation cannot undo a request already accepted by an external service or forcibly interrupt arbitrary Space Lua. Built-in editing handlers pass their execution context to `ai.writePage`, which checks cancellation before approving or starting a write. Custom handlers must pass the supplied second `context` argument to `ai.writePage(page, content, context)` for the same checks.
+
+Reopening the panel reconnects to an active run. After a worker reload, an unfinished tool becomes a paired SDK call and error result stating that its outcome is uncertain. Continue from the saved conversation and verify the affected state; do not resubmit the original edit blindly.
+
+## Context and research tools
+
+`chat.contextMaxChars` defaults to 60000 and limits text and message structure sent to the model. It is a character budget, not a token estimate. Base64 attachments and opaque provider metadata are excluded from that count; the provider still applies its own image, document and context limits. Oversized current turns fail explicitly rather than silently dropping instructions.
+
+Older turns and completed steps in long tool loops are summarised through the configured model, retaining requirements, decisions, completed actions, uncertain outcomes and unresolved work. Current SDK parts and system instructions stay intact. Summary requests are bounded and use no tools; they can add latency and model usage. Summaries are cached within a run. Full conversation history remains in the browser client store. Tool outputs sent to the model are bounded by `chat.toolResultMaxChars` (default 12000); the existing tool-result cache retains full successful tool results.
+
+`read_note` supports `startLine` and `endLine`, returning at most 200 lines and 12000 characters per call. `research_notes` runs a separate read-only agent using the parent's model and read permissions. It has only `search_notes` and `read_note`, its own context, a default six-step budget (`chat.researchMaxSteps`, capped at 12), no recursive delegation, no MCP and no Lua. Main-loop tool execution remains serial, so at most one research subagent runs at a time. Research and summary usage is included in the completed turn's usage.
+
+## Quality gates
+
+Run `bun run typecheck`, `bun run test` and `bun run dist`. Both build and release CI run type checking and tests before the production-only build. TypeScript is a development dependency and is not required by the production install.
+
+The optional upstream proxy change and its validation commands are in [patches/README.md](../patches/README.md). Applying a patch and deploying a server are separate operations from building this plug.

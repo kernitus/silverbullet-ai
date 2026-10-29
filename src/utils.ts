@@ -47,10 +47,12 @@ export function isPathAllowed(
   page: string,
   allowedPaths: string[] | undefined,
 ): boolean {
-  if (!allowedPaths || allowedPaths.length === 0) return true;
-  return allowedPaths.some(
-    (prefix) => page === prefix || page.startsWith(prefix),
-  );
+  if (page.split("/").some(segment => segment === "." || segment === "..")) return false;
+  if (allowedPaths === undefined) return true;
+  return allowedPaths.some((path) => {
+    const prefix = path.replace(/\/+$/, "");
+    return page === prefix || page.startsWith(`${prefix}/`);
+  });
 }
 
 export async function parseToolCallsFromContent(content: string): Promise<{

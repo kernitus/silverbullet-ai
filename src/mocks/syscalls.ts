@@ -173,11 +173,11 @@ function setNestedValue(obj: any, path: string, value: any): void {
         ...Object.keys(documents).map((name) => ({ name })),
       ];
     case "space.fileExists":
-      return args[0] in documents || pageForFile(args[0]) in pages;
+      return args[0] in documents || (pageForFile(args[0]) ?? "") in pages;
     case "space.readFile":
       if (args[0] in documents) return documents[args[0]];
-      if (pageForFile(args[0]) in pages) {
-        return new TextEncoder().encode(pages[pageForFile(args[0])]);
+      if ((pageForFile(args[0]) ?? "") in pages) {
+        return new TextEncoder().encode(pages[pageForFile(args[0]) ?? ""]);
       }
       throw new Error(`File not found: ${args[0]}`);
 

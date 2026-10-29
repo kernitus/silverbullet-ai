@@ -217,7 +217,7 @@ print(r.success, r.result) -- r.error is set when success is false
 
 `callTool` follows the configured approval policy, including approval for untrusted MCP tools and diff previews for `ai.writePage`. Direct calls cannot bypass approval for another running tool. Headless scripts must use tools that do not need interactive approval, or an explicitly configured approval policy.
 
-Before an approved edit is written, the page must still match the preview. Conflicting edits and failed writes return errors. SilverBullet does not expose an atomic conditional page write, so a simultaneous external edit between the final check and write remains possible.
+Before an approved edit is written, the page must still match the preview. Conflicting edits and failed writes return errors. The plug syscall does not expose an atomic conditional page write, so a simultaneous external edit between the final check and write remains possible. Current SilverBullet servers support conditional HTTP writes with `If-Match` and `If-None-Match`, but using them directly would bypass the plug’s local space and sync workflow.
 
 To discover what is available — including the namespaced MCP tool names — use
 `silverbullet-ai.listTools`:
@@ -270,3 +270,9 @@ Example tool input:
 approval unless approval is disabled in configuration. It is a broad execution
 tool: note path restrictions do not sandbox arbitrary Lua. Restricted agents can
 exclude it through their tool configuration.
+
+## Cancellation-aware handlers
+
+Lua tool handlers receive `(args, context)`. Built-in editing handlers pass that context to `ai.writePage(args.page, newContent, context)`. Keep that argument when writing custom handlers so cancellation can dismiss the pending approval and prevent a new write from starting. Direct Space Lua APIs remain unrestricted code and cannot be forcibly stopped or sandboxed by the plug.
+
+The native `read_note` tool returns bounded, numbered lines and accepts optional `startLine` and `endLine` arguments. Use it with `search_notes` to retrieve only the needed sections. The model can delegate longer research to `research_notes`; see [Agents](Agents.md).

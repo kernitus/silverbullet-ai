@@ -55,7 +55,7 @@ test("SDK tool loop falls back when the model rejects tools", async () => {
   const result = await runAgenticChat({
     messages: [{ role: "user", content: "Summarise Note" }],
     tools: testTools,
-    luaTools: new Map(),
+    luaTools: new Map([["read_note", { handler: "", description: "Read", parameters: {}, readOnly: true, execute: async () => ({ success: true, result: "Note" }) }]]),
     provider: await setup(model),
   });
   expect(result.finalResponse).toBe("answer without tools");
@@ -84,7 +84,7 @@ test("SDK streaming tool loop falls back when the model rejects tools", async ()
   const result = await runStreamingAgenticChat({
     messages: [{ role: "user", content: "hello" }],
     tools: testTools,
-    luaTools: new Map(),
+    luaTools: new Map([["read_note", { handler: "", description: "Read", parameters: {}, readOnly: true, execute: async () => ({ success: true, result: "Note" }) }]]),
     provider: await setup(model),
     onChunk: (chunk) => {
       streamed += chunk;

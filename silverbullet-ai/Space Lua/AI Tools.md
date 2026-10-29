@@ -69,8 +69,8 @@ local function listSections(content)
   return sections
 end
 
-ai.writePage = function(page, content)
-  local result = system.invokeFunction("silverbullet-ai.requestWriteApproval", page, content)
+ai.writePage = function(page, content, context)
+  local result = system.invokeFunction("silverbullet-ai.requestWriteApproval", page, content, context and context.runId)
   if not result.success then
     error(result.error or "Write rejected")
   end
@@ -97,7 +97,7 @@ ai.tools.view_file = {
     },
     required = {"path"}
   },
-  handler = function(args)
+  handler = function(args, context)
     return {
       result = "Attaching " .. args.path .. ". It appears as the next message.",
       summary = "view " .. args.path,
@@ -120,7 +120,7 @@ ai.tools.read_note = {
     },
     required = {"page"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.page) then
       return "Error: Page not found: " .. args.page
     end
@@ -185,7 +185,7 @@ ai.tools.list_pages = {
       hideMeta = {type = "boolean", description = "Hide pages tagged with 'meta' (default true)"}
     }
   },
-  handler = function(args)
+  handler = function(args, context)
     local limit = args.limit or 20
     local pathFilter = args.path or ""
     local recursive = args.recursive == true
@@ -265,7 +265,7 @@ ai.tools.get_page_info = {
     },
     required = {"page"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.page) then
       return "Error: Page not found: " .. args.page
     end
@@ -309,7 +309,7 @@ ai.tools.update_note = {
     },
     required = {"page", "content"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.page) then
       return "Error: Page not found: " .. args.page .. ". Use create_note to create it if needed."
     end
@@ -356,7 +356,7 @@ ai.tools.update_note = {
         newContent = newContent .. "\n" .. table.concat(after, "\n")
       end
 
-      ai.writePage(args.page, newContent)
+      ai.writePage(args.page, newContent, context)
       local result = "Updated section '" .. args.section .. "' in " .. args.page
       if matchCount > 1 then
         result = result .. " (occurrence " .. occurrence .. " of " .. matchCount .. ")"
@@ -372,7 +372,7 @@ ai.tools.update_note = {
         newContent = args.content
       end
 
-      ai.writePage(args.page, newContent)
+      ai.writePage(args.page, newContent, context)
       return "Updated: " .. args.page
     end
   end
@@ -391,7 +391,7 @@ ai.tools.search_replace = {
     },
     required = {"page", "search", "replace"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.page) then
       return "Error: Page not found: " .. args.page
     end
@@ -467,7 +467,7 @@ ai.tools.search_replace = {
       end
     end
 
-    ai.writePage(args.page, newContent)
+    ai.writePage(args.page, newContent, context)
 
     if replaced == 1 then
       return "Replaced 1 occurrence in " .. args.page
@@ -488,11 +488,11 @@ ai.tools.create_note = {
     },
     required = {"page", "content"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if space.pageExists(args.page) then
       return "Error: Page already exists: " .. args.page .. ". Use update_note to modify it."
     end
-    ai.writePage(args.page, args.content)
+    ai.writePage(args.page, args.content, context)
     return "Created: " .. args.page
   end
 }
@@ -509,13 +509,14 @@ ai.tools.navigate = {
     },
     required = {"ref"}
   },
-  handler = function(args)
+  handler = function(args, context)
     editor.navigate(args.ref, args.replaceState or false, args.newWindow or false)
     return "Navigated to: " .. args.ref
   end
 }
 
 ai.tools.eval_lua = {
+  unsafeLua = true,
   description = "Execute a Lua expression and return the result. Use for calculations, data transformations, or accessing SilverBullet APIs not covered by other tools. Available globals include: space, editor, sync, system, markdown, template, and standard Lua functions.",
   requiresApproval = true,
   parameters = {
@@ -526,7 +527,7 @@ ai.tools.eval_lua = {
     },
     required = {"expression"}
   },
-  handler = function(args)
+  handler = function(args, context)
     local parsed = spacelua.parseExpression(args.expression)
     local result = spacelua.evalExpression(parsed, args.env)
     if result == nil then
@@ -552,7 +553,7 @@ ai.tools.update_frontmatter = {
     },
     required = {"page"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.page) then
       return "Error: Page not found: " .. args.page
     end
@@ -590,7 +591,7 @@ ai.tools.update_frontmatter = {
     local content = space.readPage(args.page)
     local newContent = index.patchFrontmatter(content, patches)
 
-    ai.writePage(args.page, newContent)
+    ai.writePage(args.page, newContent, context)
 
     local changes = {}
     if #setKeys > 0 then
@@ -616,7 +617,7 @@ ai.tools.rename_note = {
     },
     required = {"oldPage", "newPage"}
   },
-  handler = function(args)
+  handler = function(args, context)
     if not space.pageExists(args.oldPage) then
       return "Error: Page not found: " .. args.oldPage
     end

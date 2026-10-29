@@ -1,3 +1,12 @@
+import { filterCapabilities, isRestricted } from "./capabilities.ts";
+import { interruptedMessages, type RunCheckpoint } from "./execution.ts";
+import {
+  CHAT_HISTORY_KEY,
+  beginPanelTurn,
+  savePanelCheckpoint,
+  loadPanelHistory,
+  clearPanelHistory,
+} from "./panel-history.ts";
 import {
   asset,
   clientStore,
@@ -13,6 +22,7 @@ import type {
   LuaToolDefinition,
   Tool,
   Usage,
+  PathPermissions,
 } from "./types.ts";
 import {
   aiSettings,
@@ -44,6 +54,7 @@ import {
 import { getModelContextLimit as lookupModelContextLimit } from "./model-metadata.ts";
 
 let isPanelOpen = false;
+let panelStarting = false;
 let currentChatAgent: AIAgentTemplate | null = null;
 
 let sessionTokenUsage: Usage = {
@@ -56,13 +67,15 @@ let tokenUsageLoaded = false;
 interface StreamBuffer {
   chunks: string[];
   reasoningChunks: string[];
-  status: "streaming" | "complete" | "error";
+  status: "streaming" | "complete" | "error" | "cancelled";
+  controller: AbortController;
+  chatId: string;
+  checkpoint: RunCheckpoint;
   error?: string;
   statusMessage?: string;
   messages?: ChatMessage[];
 }
 const streamBuffers = new Map<string, StreamBuffer>();
-const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 const TOKEN_USAGE_KEY = "ai.panelTokenUsage";
 const PANEL_STATE_KEY = "ai.panelOpen";
 const AGENT_KEY = "ai.panelAgent";
@@ -186,11 +199,30 @@ export async function toggleAIAssistant() {
  * Called from the panel iframe.
  * This is called each time a new message is sent, not just the first one.
  */
-export async function startPanelChat(messages: ChatMessage[]): Promise<{
+export async function startPanelChat(
+  messages: ChatMessage[],
+  chatId = crypto.randomUUID(),
+): Promise<{
   streamId?: string;
   error?: string;
 }> {
+  let streamId: string | undefined;
+  if (panelStarting) return { error: "A chat is already starting." };
+  panelStarting = true;
   try {
+    if (
+      [...streamBuffers.values()].some(
+        (buffer) => buffer.status === "streaming",
+      )
+    )
+      return {
+        error:
+          "A chat is already running. Stop it before starting another turn.",
+      };
+    const stored = await getPanelChatHistory();
+    const lastInput = messages.at(-1);
+    if (stored?.id === chatId && lastInput)
+      messages = [...stored.messages, lastInput];
     await initIfNeeded();
 
     if (!currentAIProvider) {
@@ -201,26 +233,54 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
     }
 
     await initChatAgent();
+    const chatAgent = currentChatAgent;
 
-    const streamId = `stream_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    streamId = `stream_${crypto.randomUUID()}`;
+    const controller = new AbortController();
+    const permissions: PathPermissions = {
+      allowedReadPaths: chatAgent?.aiagent.allowedReadPaths,
+      allowedWritePaths: chatAgent?.aiagent.allowedWritePaths,
+      allowUnsafeLua:
+        chatAgent?.aiagent.allowUnsafeLua ?? aiSettings?.chat?.allowUnsafeLua,
+    };
 
+    const scope = JSON.stringify({
+      agent: chatAgent?.ref,
+      read: permissions.allowedReadPaths,
+      write: permissions.allowedWritePaths,
+    });
+    if (
+      isRestricted(permissions) &&
+      stored?.id === chatId &&
+      stored.messages.length &&
+      stored.scope !== scope
+    ) {
+      return {
+        error:
+          "Start a new chat before changing to a restricted agent or changing its path permissions. Earlier conversation contents may be outside the new scope.",
+      };
+    }
     streamBuffers.set(streamId, {
       chunks: [],
       reasoningChunks: [],
       status: "streaming",
+      controller,
+      chatId,
+      checkpoint: { messages },
     });
 
     let luaTools = toolsEnabled()
       ? await discoverAllTools()
       : new Map<string, LuaToolDefinition>();
-    if (currentChatAgent) {
-      luaTools = filterToolsForAgent(luaTools, currentChatAgent);
+    if (chatAgent) {
+      luaTools = filterToolsForAgent(luaTools, chatAgent);
     }
+    luaTools = filterCapabilities(luaTools, permissions);
     const tools = convertToOpenAITools(luaTools);
     log.debug(
       `Panel chat: discovered ${tools.length} tools${
-        currentChatAgent
-          ? ` (filtered for agent: ${currentChatAgent.aiagent.name || currentChatAgent.ref})`
+        chatAgent
+          ? ` (filtered for agent: ${chatAgent.aiagent.name || chatAgent.ref})`
           : ""
       }`,
     );
@@ -229,13 +289,15 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
     let pageImageSource: { page: string; content: string } | undefined;
     try {
       const currentPage = await editor.getCurrentPage();
-      const allowedReadPaths = currentChatAgent?.aiagent?.allowedReadPaths;
+      const allowedReadPaths = chatAgent?.aiagent?.allowedReadPaths;
       const pageAllowed = isPathAllowed(currentPage, allowedReadPaths);
 
-      contextBlock = `Current page: ${currentPage}`;
+      contextBlock = pageAllowed
+        ? `Current page: ${currentPage}`
+        : "Current page is outside the agent's allowed paths.";
       contextBlock += `\nCurrent date and time: ${new Date().toISOString()}`;
-      if (currentChatAgent) {
-        const agentName = currentChatAgent.aiagent.name || currentChatAgent.ref;
+      if (chatAgent) {
+        const agentName = chatAgent.aiagent.name || chatAgent.ref;
         contextBlock += `\nActive agent: ${agentName}`;
       }
 
@@ -257,7 +319,7 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
       log.debug("Could not get page context:", e);
     }
 
-    if (aiSettings?.chat?.customContext) {
+    if (aiSettings?.chat?.customContext && !isRestricted(permissions)) {
       try {
         const customResult = await lua.evalExpression(
           aiSettings.chat.customContext,
@@ -272,9 +334,9 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
 
     let systemContent: string;
     let agentAttachments: Attachment[] = [];
-    if (currentChatAgent) {
+    if (chatAgent) {
       // Use agent prompt if we have one
-      const agentResult = await buildAgentSystemPrompt(currentChatAgent);
+      const agentResult = await buildAgentSystemPrompt(chatAgent);
       systemContent = agentResult.systemPrompt;
       agentAttachments = agentResult.attachments;
     } else {
@@ -294,7 +356,13 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
     const history = messages
       .slice(0, -1)
       .filter((message) => message.role !== "system");
-    const { messagesWithAttachments } = await enrichChatMessages([{ ...last }]);
+    const { messagesWithAttachments } = isRestricted(permissions)
+      ? {
+          messagesWithAttachments: [
+            { message: { ...last }, attachments: [] as Attachment[] },
+          ],
+        }
+      : await enrichChatMessages([{ ...last }]);
 
     // Prepend page context after message enrichment
     if (contextBlock) {
@@ -322,7 +390,7 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
               enabledKinds,
               handlerExts,
               seen,
-              currentChatAgent?.aiagent?.allowedReadPaths,
+              chatAgent?.aiagent?.allowedReadPaths,
             );
             existing.push(...pageFiles);
           }
@@ -338,24 +406,52 @@ export async function startPanelChat(messages: ChatMessage[]): Promise<{
 
     const transientPrefixLength = 1 + agentAttachments.length;
     workingMessages.splice(transientPrefixLength, 0, ...history);
+    await beginPanelTurn(chatId, streamId, messages, scope);
+    const runningId = streamId;
     runToolLoop(
-      streamId,
+      runningId,
       workingMessages,
       tools,
       luaTools,
       transientPrefixLength,
-    ).catch((error: Error) => {
-      const buffer = streamBuffers.get(streamId);
-      if (buffer) {
-        buffer.status = "error";
-        buffer.error = error.message;
-      }
-    });
+      permissions,
+      !chatAgent?.aiagent.toolsExclude?.includes("research_notes") &&
+        (!chatAgent?.aiagent.tools?.length ||
+          chatAgent.aiagent.tools.includes("research_notes")),
+    )
+      .catch(async (error: Error) => {
+        const buffer = streamBuffers.get(runningId);
+        if (buffer) {
+          buffer.status = buffer.controller.signal.aborted
+            ? "cancelled"
+            : "error";
+          buffer.error =
+            buffer.status === "cancelled"
+              ? "Stopped. Completed work has been kept."
+              : error.message;
+          buffer.messages = interruptedMessages(buffer.checkpoint);
+          await savePanelCheckpoint(
+            buffer.chatId,
+            runningId,
+            { messages: buffer.messages },
+            buffer.status,
+            buffer.error,
+          );
+        }
+      })
+      .catch((error) => {
+        const buffer = streamBuffers.get(runningId);
+        if (buffer)
+          buffer.error = `Could not save recovery state: ${error instanceof Error ? error.message : String(error)}`;
+      });
 
     return { streamId };
   } catch (error) {
+    if (streamId) streamBuffers.delete(streamId);
     log.error("Error starting panel chat:", error);
     return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    panelStarting = false;
   }
 }
 
@@ -369,6 +465,8 @@ async function runToolLoop(
   tools: Tool[],
   luaTools: Map<string, LuaToolDefinition>,
   transientPrefixLength: number,
+  permissions: PathPermissions,
+  enableResearch: boolean,
 ): Promise<void> {
   const buffer = streamBuffers.get(streamId);
   if (!buffer) return;
@@ -378,24 +476,58 @@ async function runToolLoop(
     tools,
     luaTools,
     provider: currentAIProvider,
+    runId: streamId,
+    abortSignal: buffer.controller.signal,
+    enableResearch,
+    onCheckpoint: async (checkpoint) => {
+      if (buffer.status !== "streaming") return;
+      buffer.checkpoint = {
+        ...checkpoint,
+        messages: checkpoint.messages.slice(transientPrefixLength),
+      };
+      await savePanelCheckpoint(buffer.chatId, streamId, buffer.checkpoint);
+    },
     onChunk: (chunk) => buffer.chunks.push(chunk),
     onReasoningChunk: (chunk) => buffer.reasoningChunks.push(chunk),
     onToolCall: (toolName, _args, result) => {
       const status = result.success ? "✓" : "✗";
       buffer.statusMessage = `${status} ${toolName}`;
     },
-    permissions: currentChatAgent?.aiagent
-      ? {
-          allowedReadPaths: currentChatAgent.aiagent.allowedReadPaths,
-          allowedWritePaths: currentChatAgent.aiagent.allowedWritePaths,
-        }
-      : undefined,
+    permissions,
   });
 
   updateTokenUsage(result.usage);
 
   buffer.messages = result.messages.slice(transientPrefixLength);
+  buffer.checkpoint = { messages: buffer.messages };
+  await savePanelCheckpoint(
+    buffer.chatId,
+    streamId,
+    buffer.checkpoint,
+    "complete",
+  );
   buffer.status = "complete";
+}
+
+export async function cancelPanelChat(streamId: string): Promise<void> {
+  streamBuffers
+    .get(streamId)
+    ?.controller.abort(new DOMException("Stopped by user", "AbortError"));
+}
+
+export function getPanelChatHistory() {
+  return loadPanelHistory(
+    (id) => streamBuffers.get(id)?.status === "streaming",
+  );
+}
+
+export async function resetPanelChatHistory(id: string): Promise<void> {
+  if (
+    panelStarting ||
+    [...streamBuffers.values()].some((buffer) => buffer.status === "streaming")
+  )
+    throw new Error("Stop the running chat before starting a new one.");
+  await clearPanelHistory(id);
 }
 
 /**

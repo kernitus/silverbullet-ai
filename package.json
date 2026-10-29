@@ -8,7 +8,8 @@
     "test": "bun run --bun vitest run",
     "test:integration": "bun run --bun vitest run --root integration-tests",
     "dist": "bun run build && bun scripts/build-dist.ts",
-    "update-readme": "bun scripts/update-readme.ts"
+    "update-readme": "bun scripts/update-readme.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.107",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "@lezer/markdown": "^1.8.1",
     "@structured-types/api": "^3.46.12",
+    "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
   "engines": {
