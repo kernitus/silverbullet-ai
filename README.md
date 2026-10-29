@@ -300,6 +300,8 @@ Every push to `develop` or `main`, and every pull request targeting either branc
 
 Each successful build uploads the three distribution files as an Actions artefact named `silverbullet-ai-<commit SHA>`, retained for **30 days**. Download it from the Actions run linked to the commit's build check. GitHub requires you to sign in to download artefacts.
 
+Successful pushes to `develop` also publish the tested distribution to the rolling `dev` prerelease, replacing its three assets and moving the `dev` tag to the built commit. Superseded builds are skipped. Pull requests and pushes to `main` do not publish development releases.
+
 The release workflow runs on version tags or through a manual trigger. It tests the code, builds with production dependencies and attaches the distribution files to a GitHub release.
 
 ## Installation
@@ -308,13 +310,15 @@ Requires SilverBullet **2.11.0 or later**. The plug is built against the SilverB
 
 ### Development builds
 
-1. Open the commit's build check or the [Build and Test workflow](https://github.com/kernitus/silverbullet-ai/actions/workflows/build.yml).
-2. Open a successful run and download its `silverbullet-ai-<commit SHA>` artefact.
-3. Extract the archive and copy `silverbullet-ai.plug.js` into your space's `_plug` folder.
-4. Copy `silverbullet-ai-library.md` into the space root.
-5. Run `Sync: Now` in SilverBullet to load the plug and library.
+Run `Library: Install` and enter:
 
-Repeat these steps to install another build. Actions artefacts support manual installation; they do not provide a SilverBullet subscription URL or automatic updates. `PLUG.md` is intended for published releases, so use the compiled plug and combined library for an artefact installation.
+```text
+ghr:kernitus/silverbullet-ai@dev/PLUG.md
+```
+
+After the first successful `develop` build publishes the prerelease, this address provides the latest tested development build. Use Library Manager to fetch subsequent updates. CI publishes builds automatically; updating your installed copy remains a Library Manager action.
+
+The [development prerelease](https://github.com/kernitus/silverbullet-ai/releases/tag/dev) records the built commit. Actions artefacts remain available for inspecting individual builds.
 
 ### Published releases
 
@@ -330,8 +334,8 @@ For a specific version, insert its tag before `/PLUG.md`:
 ghr:kernitus/silverbullet-ai@<tag>/PLUG.md
 ```
 
-Check [GitHub Releases](https://github.com/kernitus/silverbullet-ai/releases) for published tags. Pushes to `develop` produce Actions artefacts; they do not publish releases.
+Check [GitHub Releases](https://github.com/kernitus/silverbullet-ai/releases) for published tags. The rolling `dev` prerelease is selected explicitly with `@dev`; the untagged installation address selects the latest stable release.
 
-Use one installation method at a time. When switching from a manual installation to Library Manager, remove the manually copied plug and combined library to avoid duplicate definitions.
+Remove an existing upstream installation through Library Manager before installing this fork to avoid duplicate definitions. Use one installation method at a time. When switching from a manual installation to Library Manager, remove the manually copied plug and combined library to avoid duplicate definitions.
 
 See the [upstream documentation](https://ai.silverbullet.md/) for additional configuration details and the [local development guide](docs/Development.md) for this fork's build instructions.

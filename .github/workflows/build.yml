@@ -52,6 +52,8 @@ jobs:
 
       - name: Build
         run: bun run dist
+        env:
+          RELEASE_VERSION: ${{ github.ref == 'refs/heads/develop' && format('dev-{0}', github.sha) || '' }}
 
       - name: Upload SilverBullet distribution
         uses: actions/upload-artifact@v7
@@ -63,3 +65,61 @@ jobs:
             dist/silverbullet-ai-library.md
           if-no-files-found: error
           retention-days: 30
+
+  publish-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download tested distribution
+        uses: actions/download-artifact@v8
+        with:
+          name: silverbullet-ai-${{ github.sha }}
+          path: dist
+
+      - name: Check that this is the current development commit
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/develop" --jq '.object.sha')
+          if [ "$head_sha" = "$GITHUB_SHA" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping superseded build $GITHUB_SHA"
+          fi
+
+      - name: Move development tag to the tested commit
+        if: steps.current.outputs.publish == 'true'
+        run: |
+          git tag --force dev "$GITHUB_SHA"
+          git push --force origin refs/tags/dev
+
+      - name: Publish rolling development prerelease
+        if: steps.current.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: dev
+          name: Development build
+          prerelease: true
+          make_latest: "false"
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          body: |
+            Latest tested development build: ${{ github.sha }}.
+
+            Install through SilverBullet's Library Manager:
+            `ghr:${{ github.repository }}@dev/PLUG.md`
+
+            Use Library Manager to fetch subsequent updates.
+          files: |
+            dist/silverbullet-ai.plug.js
+            dist/PLUG.md
+            dist/silverbullet-ai-library.md
