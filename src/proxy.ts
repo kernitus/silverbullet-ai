@@ -15,6 +15,13 @@ export function buildProxyHeaders(
   return newHeaders;
 }
 
+class ProxySchemeError extends Error {}
+
+function proxyBase(): string {
+  const pathname = globalThis.location?.pathname ?? "";
+  return pathname.includes("/.fs/") ? pathname.split("/.fs/")[0] : "";
+}
+
 export function buildProxyUrl(url: string): string {
   const target = new URL(url);
   if (target.protocol !== "http:" && target.protocol !== "https:") {
@@ -35,7 +42,7 @@ export function buildProxyUrl(url: string): string {
       ? "http:"
       : "https:";
   if (target.protocol !== proxyProtocol) {
-    throw new Error(
+    throw new ProxySchemeError(
       `SilverBullet's proxy would change the configured ${target.protocol.slice(0, -1).toUpperCase()} URL to ${proxyProtocol.slice(0, -1).toUpperCase()}. ` +
         "Set useProxy = false for this connection and allow browser access (CORS) on the endpoint. " +
         "An HTTPS SilverBullet page also requires an HTTPS endpoint for direct requests.",
@@ -43,9 +50,7 @@ export function buildProxyUrl(url: string): string {
   }
   // Plug workers are loaded from <prefix>/.fs/..., so derive the prefix from our
   // own location to support SilverBullet instances hosted under a URL prefix.
-  const pathname = globalThis.location?.pathname ?? "";
-  const base = pathname.includes("/.fs/") ? pathname.split("/.fs/")[0] : "";
-  return `${base}/.proxy/${path}`;
+  return `${proxyBase()}/.proxy/${path}`;
 }
 
 // When proxied, SilverBullet returns its own 200 and moves the upstream status to
@@ -113,6 +118,32 @@ function toHeaderRecord(
 const rawFetch: typeof fetch = (url, init) =>
   ((globalThis as any).nativeFetch ?? globalThis.fetch)(url, init);
 
+async function proxyUrlForFetch(
+  url: string,
+  signal: AbortSignal,
+): Promise<string> {
+  try {
+    return buildProxyUrl(url);
+  } catch (error) {
+    if (!(error instanceof ProxySchemeError)) throw error;
+    // Probe without provider headers or a target URL. Older servers must never
+    // receive credentials for a request whose scheme they would change.
+    const capability = await rawFetch(`${proxyBase()}/.proxy/`, {
+      method: "OPTIONS",
+      headers: { "X-Proxy-Request": "true" },
+      signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+    });
+    if (
+      capability.status !== 204 ||
+      capability.headers.get("x-silverbullet-proxy-version") !== "2"
+    )
+      throw error;
+    const target = new URL(url);
+    target.hash = "";
+    return `${proxyBase()}/.proxy/${encodeURIComponent(target.href)}`;
+  }
+}
+
 /**
  * Fetch through `/.proxy/` when `useProxy` is set, with `timeout` as the only
  * request deadline.
@@ -125,14 +156,16 @@ export async function proxiedFetch(
   name: string,
 ): Promise<Response> {
   try {
-    const res = await rawFetch(useProxy ? buildProxyUrl(url) : url, {
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)])
+      : AbortSignal.timeout(timeout);
+    const target = useProxy ? await proxyUrlForFetch(url, signal) : url;
+    const res = await rawFetch(target, {
       ...options,
       headers: useProxy
         ? buildProxyHeaders(toHeaderRecord(options.headers))
         : options.headers,
-      signal: options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)])
-        : AbortSignal.timeout(timeout),
+      signal,
     });
     return useProxy ? unwrapProxyResponse(res) : res;
   } catch (error) {

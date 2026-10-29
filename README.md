@@ -72,6 +72,8 @@ After installing the plug, you can access its features through the command palet
 
 The assistant panel stores conversations as Vercel AI SDK `ModelMessage` arrays in SilverBullet’s browser client store. Text, tool calls, full tool results, reasoning and provider metadata are retained for subsequent turns. Displayed tool details are separate from the model messages. Legacy panel histories are not imported. Chat on a page remains a Markdown interface.
 
+The panel supports Stop and recovery from completed SDK steps. Long conversations use bounded tool output and SDK-backed summarisation. The `research_notes` tool delegates read-only research with inherited note permissions. Arbitrary Lua requires `allowUnsafeLua = true` and is unavailable to path-restricted agents. See [agent capabilities](docs/Agents.md) and [execution and context settings](docs/Development.md).
+
 ### Configuration
 
 SilverBullet v2 uses Space Lua for configuration. Add a `space-lua` block to your `CONFIG` page:
@@ -123,7 +125,7 @@ With this configuration:
 | `fetchModels` | Fetch models from API (default: true). Set false if API doesn't support it |
 | `provider` | Explicit provider type when key name doesn't match (e.g., `provider = "openai"` for OpenRouter) |
 
-SilverBullet's proxy infers the upstream scheme from the hostname. It uses HTTP for IPv4 addresses and names starting with `localhost` or `host.docker.internal`, and HTTPS otherwise. The plug rejects proxied URLs whose configured scheme differs, before sending the request or API key. For those endpoints, set `useProxy = false` and configure the endpoint to allow browser requests (CORS). Direct requests from an HTTPS SilverBullet page also require an HTTPS endpoint. Preserving arbitrary schemes through the proxy requires a change to the SilverBullet server.
+SilverBullet's proxy infers the upstream scheme from the hostname. It uses HTTP for IPv4 addresses and names starting with `localhost` or `host.docker.internal`, and HTTPS otherwise. The plug rejects proxied URLs whose configured scheme differs, before sending the request or API key. For those endpoints, set `useProxy = false` and configure the endpoint to allow browser requests (CORS). Direct requests from an HTTPS SilverBullet page also require an HTTPS endpoint. The plug probes for explicit-scheme support before sending credentials for these URLs. An optional, tested [SilverBullet server patch](patches/README.md) adds that support; it must be applied and deployed separately.
 
 #### Ollama
 

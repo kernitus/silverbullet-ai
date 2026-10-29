@@ -1,0 +1,198 @@
+diff --git a/docs/HTTP API.md b/docs/HTTP API.md
+index 11fc55e..f6d3548 100644
+--- a/docs/HTTP API.md	
++++ b/docs/HTTP API.md	
+@@ -76,7 +76,9 @@ Some functionality is exposed as RPC-style calls
+ * `GET /.ping`: Returns 200 with body `OK` if the server is available.
+ * `POST /.shell`: Run a shell command on the server side and return the result.
+ * `POST /.logs`: Accepts a JSON array of log entry objects with fields `source`, `level`, `message`, and `timestamp`. The server logs these with the client's IP. Returns `OK`.
+-* `* /.proxy/<host[:port]>/path`: Proxy an HTTP request to avoid CORS issues.
++* `OPTIONS /.proxy/`: Authenticated capability probe. Returns 204 with `x-silverbullet-proxy-version: 2` when explicit HTTP(S) targets are supported. Disabled in read-only mode. No outbound request is made.
++* `* /.proxy/<percent-encoded absolute HTTP(S) URL>`: Proxy a request while preserving its explicit scheme, host, path and query. URLs containing credentials are rejected; tunnel an `Authorization` header instead. For example, encode the entire `https://localhost:8443/v1?key=value` URL as a single path component.
++* `* /.proxy/<host[:port]>/path`: Legacy proxy form to avoid CORS issues.
+   * Blocked in read-only mode (returns 405).
+   * The URI does not include a scheme — it is auto-detected: `http://` is used for `localhost`, `127.0.0.1`, bare IP addresses, and `host.docker.internal`; `https://` is used for everything else.
+   * Request headers prefixed with `X-Proxy-Header-` have the prefix stripped and are forwarded to the upstream server.
+diff --git a/server/src/handlers/proxy.rs b/server/src/handlers/proxy.rs
+index a17b48e..c1c3a5e 100644
+--- a/server/src/handlers/proxy.rs
++++ b/server/src/handlers/proxy.rs
+@@ -8,7 +8,7 @@ use axum::response::{IntoResponse, Response};
+ use crate::state::ServerState;
+ 
+ /// Derive the proxy target URL: `http://` for localhost-ish hosts, `https://`
+-/// otherwise, with the original query string appended.
++/// otherwise for legacy clients. Explicit HTTP(S) schemes are preserved.
+ pub(crate) fn proxy_target_url(path: &str, query: Option<&str>) -> String {
+     use std::sync::LazyLock;
+     static LOCALHOST: LazyLock<regex::Regex> = LazyLock::new(|| {
+@@ -16,13 +16,31 @@ pub(crate) fn proxy_target_url(path: &str, query: Option<&str>) -> String {
+             .unwrap()
+     });
+     let q = query.map(|q| format!("?{q}")).unwrap_or_default();
+-    if LOCALHOST.is_match(path) {
++    if path.starts_with("http://") || path.starts_with("https://") {
++        format!("{path}{q}")
++    } else if LOCALHOST.is_match(path) {
+         format!("http://{path}{q}")
+     } else {
+         format!("https://{path}{q}")
+     }
+ }
+ 
++/// Authenticated capability probe; does not make an outbound request.
++pub async fn proxy_capabilities(State(state): State<Arc<ServerState>>) -> Response {
++    if state.boot_config.read_only {
++        return (
++            StatusCode::METHOD_NOT_ALLOWED,
++            "Read only mode, no proxy allowed",
++        )
++            .into_response();
++    }
++    (
++        StatusCode::NO_CONTENT,
++        [("x-silverbullet-proxy-version", "2")],
++    )
++        .into_response()
++}
++
+ pub async fn handle_proxy(
+     State(state): State<Arc<ServerState>>,
+     Path(path): Path<String>,
+@@ -43,6 +61,15 @@ pub async fn handle_proxy(
+     }
+ 
+     let target = proxy_target_url(&path, raw_query.as_deref());
++    let valid_target = reqwest::Url::parse(&target).is_ok_and(|url| {
++        matches!(url.scheme(), "http" | "https")
++            && url.host_str().is_some()
++            && url.username().is_empty()
++            && url.password().is_none()
++    });
++    if !valid_target {
++        return (StatusCode::BAD_REQUEST, "Invalid HTTP(S) proxy URL").into_response();
++    }
+ 
+     let mut fwd_headers: Vec<(String, String)> = Vec::new();
+     let mut has_ua = false;
+@@ -159,6 +186,59 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn explicit_schemes_are_preserved() {
++        for url in [
++            "https://localhost:8443/v1",
++            "http://model-server:8080/v1",
++            "https://192.168.1.2/v1",
++            "http://[::1]:8080/v1",
++        ] {
++            assert_eq!(proxy_target_url(url, Some("a=1")), format!("{url}?a=1"));
++        }
++    }
++
++    #[tokio::test]
++    async fn capabilities_are_explicit_and_disabled_in_read_only_mode() {
++        for read_only in [false, true] {
++            let response = crate::build_router(state_read_only(read_only))
++                .oneshot(
++                    Request::builder()
++                        .method("OPTIONS")
++                        .uri("/.proxy/")
++                        .body(Body::empty())
++                        .unwrap(),
++                )
++                .await
++                .unwrap();
++            assert_eq!(
++                response.status(),
++                if read_only {
++                    StatusCode::METHOD_NOT_ALLOWED
++                } else {
++                    StatusCode::NO_CONTENT
++                }
++            );
++            if !read_only {
++                assert_eq!(response.headers()["x-silverbullet-proxy-version"], "2");
++            }
++        }
++    }
++
++    #[tokio::test]
++    async fn rejects_credentials_in_explicit_urls() {
++        let response = crate::build_router(state_read_only(false))
++            .oneshot(
++                Request::builder()
++                    .uri("/.proxy/https%3A%2F%2Fuser%3Asecret%40example.com%2F")
++                    .body(Body::empty())
++                    .unwrap(),
++            )
++            .await
++            .unwrap();
++        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
++    }
++
+     fn state_read_only(read_only: bool) -> Arc<ServerState> {
+         let mut s = test_state();
+         s.boot_config.read_only = read_only;
+@@ -180,7 +260,7 @@ mod tests {
+     }
+ 
+     #[tokio::test]
+-    async fn empty_path_is_400() {
++    async fn empty_path_accepts_only_options() {
+         let resp = crate::build_router(state_read_only(false))
+             .oneshot(
+                 Request::builder()
+@@ -190,12 +270,7 @@ mod tests {
+             )
+             .await
+             .unwrap();
+-        // Either the wildcard captures empty → 400, or the route doesn't match → 404.
+-        assert!(
+-            resp.status() == StatusCode::BAD_REQUEST || resp.status() == StatusCode::NOT_FOUND,
+-            "got {}",
+-            resp.status()
+-        );
++        assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+     }
+ 
+     #[tokio::test]
+@@ -225,7 +300,7 @@ mod tests {
+         let resp = crate::build_router(state_read_only(false))
+             .oneshot(
+                 Request::builder()
+-                    .uri(format!("/.proxy/127.0.0.1:{port}/echo"))
++                    .uri(format!("/.proxy/http%3A%2F%2F127.0.0.1%3A{port}%2Fecho"))
+                     .header("x-proxy-header-x-test", "abc")
+                     .body(Body::empty())
+                     .unwrap(),
+diff --git a/server/src/router.rs b/server/src/router.rs
+index bcb368f..7603c26 100644
+--- a/server/src/router.rs
++++ b/server/src/router.rs
+@@ -311,6 +311,10 @@ pub fn build_router(state: Arc<ServerState>) -> Router {
+             get(revisions::handle_file_revisions).layer(CompressionLayer::new()),
+         )
+         .route("/.shell", post(crate::handlers::shell::handle_shell))
++        .route(
++            "/.proxy/",
++            axum::routing::options(crate::handlers::proxy::proxy_capabilities),
++        )
+         .route("/.proxy/{*path}", any(crate::handlers::proxy::handle_proxy))
+         .route(
+             "/.runtime/lua",
+@@ -902,7 +906,12 @@ mod auth_tests {
+ 
+     #[test]
+     fn capability_routes_require_write() {
+-        for path in ["/.shell", "/.proxy/https://example.com", "/.runtime/lua"] {
++        for path in [
++            "/.shell",
++            "/.proxy/https://example.com",
++            "/.proxy/",
++            "/.runtime/lua",
++        ] {
+             assert_eq!(
+                 super::required_level(&Method::GET, path),
+                 AccessLevel::Write,

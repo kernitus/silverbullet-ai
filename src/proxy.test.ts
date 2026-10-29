@@ -15,7 +15,9 @@ test.each([
   "http://example.com/v1",
   "http://[::1]:8080/v1",
 ])("rejects scheme changes before sending credentials: %s", async (url) => {
-  const fetchMock = vi.fn();
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(new Response("old server", { status: 404 }));
   vi.stubGlobal("fetch", fetchMock);
   await expect(
     proxiedFetch(
@@ -26,7 +28,12 @@ test.each([
       "AI",
     ),
   ).rejects.toThrow("Set useProxy = false");
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0][0]).toBe("/.proxy/");
+  expect(fetchMock.mock.calls[0][1]).toMatchObject({
+    method: "OPTIONS",
+    headers: { "X-Proxy-Request": "true" },
+  });
 });
 
 test.each([
@@ -214,3 +221,42 @@ test("proxiedFetch preserves caller cancellation", async () => {
   controller.abort(new Error("Cancelled by caller"));
   await expect(request).rejects.toThrow("Cancelled by caller");
 });
+
+test.each([
+  "https://localhost:8443/v1?q=a%20b",
+  "http://model-server:8080/v1",
+  "http://[::1]:8080/v1",
+])(
+  "scheme-aware proxy preserves %s after a credential-free probe",
+  async (url) => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 204,
+          headers: { "x-silverbullet-proxy-version": "2" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("ok", { headers: { "x-proxy-status-code": "200" } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxiedFetch(
+      url,
+      { headers: { Authorization: "Bearer secret" } },
+      true,
+      1000,
+      "AI",
+    );
+    expect(await response.text()).toBe("ok");
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      "X-Proxy-Request": "true",
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      `/.proxy/${encodeURIComponent(new URL(url).href)}`,
+    );
+    expect(
+      fetchMock.mock.calls[1][1].headers["X-Proxy-Header-Authorization"],
+    ).toBe("Bearer secret");
+  },
+);
