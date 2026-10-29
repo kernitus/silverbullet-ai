@@ -121,6 +121,8 @@ With this configuration:
 | `fetchModels` | Fetch models from API (default: true). Set false if API doesn't support it |
 | `provider` | Explicit provider type when key name doesn't match (e.g., `provider = "openai"` for OpenRouter) |
 
+SilverBullet's proxy infers the upstream scheme from the hostname. It uses HTTP for IPv4 addresses and names starting with `localhost` or `host.docker.internal`, and HTTPS otherwise. The plug rejects proxied URLs whose configured scheme differs, before sending the request or API key. For those endpoints, set `useProxy = false` and configure the endpoint to allow browser requests (CORS). Direct requests from an HTTPS SilverBullet page also require an HTTPS endpoint. Preserving arbitrary schemes through the proxy requires a change to the SilverBullet server.
+
 #### Ollama
 
 ```lua

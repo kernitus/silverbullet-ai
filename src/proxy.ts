@@ -16,11 +16,36 @@ export function buildProxyHeaders(
 }
 
 export function buildProxyUrl(url: string): string {
+  const target = new URL(url);
+  if (target.protocol !== "http:" && target.protocol !== "https:") {
+    throw new Error("SilverBullet's proxy only supports HTTP and HTTPS URLs.");
+  }
+  if (target.username || target.password) {
+    throw new Error(
+      "URLs containing credentials cannot use SilverBullet's proxy. Use an Authorization header instead.",
+    );
+  }
+  // Match the server's heuristic exactly, including its prefix matching. The
+  // proxy protocol omits the scheme and offers no way to override this choice.
+  const path = `${target.host}${target.pathname}${target.search}`;
+  const proxyProtocol =
+    /^(localhost|127\.0\.0\.1|\d+\.\d+\.\d+\.\d+|host\.docker\.internal)/.test(
+      path,
+    )
+      ? "http:"
+      : "https:";
+  if (target.protocol !== proxyProtocol) {
+    throw new Error(
+      `SilverBullet's proxy would change the configured ${target.protocol.slice(0, -1).toUpperCase()} URL to ${proxyProtocol.slice(0, -1).toUpperCase()}. ` +
+        "Set useProxy = false for this connection and allow browser access (CORS) on the endpoint. " +
+        "An HTTPS SilverBullet page also requires an HTTPS endpoint for direct requests.",
+    );
+  }
   // Plug workers are loaded from <prefix>/.fs/..., so derive the prefix from our
   // own location to support SilverBullet instances hosted under a URL prefix.
   const pathname = globalThis.location?.pathname ?? "";
   const base = pathname.includes("/.fs/") ? pathname.split("/.fs/")[0] : "";
-  return `${base}/.proxy/${url.replace(/^https?:\/\//i, "")}`;
+  return `${base}/.proxy/${path}`;
 }
 
 // When proxied, SilverBullet returns its own 200 and moves the upstream status to
