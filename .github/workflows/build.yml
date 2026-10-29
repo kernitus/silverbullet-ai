@@ -1,6 +1,7 @@
 name: Build and Test
 
 on:
+  workflow_dispatch:
   push:
     branches: ["main", "develop"]
   pull_request:
@@ -67,7 +68,7 @@ jobs:
           retention-days: 30
 
   publish-dev:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/develop'
     needs: build
     runs-on: ubuntu-latest
     permissions:
