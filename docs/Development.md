@@ -1,9 +1,10 @@
 ## Build
 
-To build this plug, make sure you have [Node.js](https://nodejs.org/) (v18 or later) and bun install --frozen-lockfileed. Then install dependencies and build:
+To build this plug, install Bun 1.4.4 (the version in `.bun-version`).
+From a clean checkout, install production dependencies and build:
 
 ```shell
-bun install --frozen-lockfile
+bun install --production --frozen-lockfile
 bun run build
 ```
 
@@ -33,7 +34,23 @@ Copy `silverbullet-ai-library.md` to your space root so SilverBullet can load th
 Bun runs the existing SilverBullet `plug-compile` compiler, so the output remains a
 SilverBullet browser plug. Use `bun run test` to run the Vitest suite; `bun test`
 selects Bun's separate test runner. CI uses the version in `.bun-version` and
-installs dependencies from `bun.lock` with `--frozen-lockfile`.
+installs dependencies from `bun.lock` with `--frozen-lockfile`. Tests run in a
+separate job with development dependencies. Build and release jobs use fresh
+checkouts with only production dependencies installed.
+
+After each successful CI build, the workflow uploads the three distribution files
+as `silverbullet-ai-<commit SHA>`, retained for 30 days. Open the commit's
+build check, follow it to the Actions run, and download the archive under
+Artefacts. GitHub requires you to sign in to download it.
+Extract the archive, copy `silverbullet-ai.plug.js` into your space's `_plug`
+folder, and copy `silverbullet-ai-library.md` to the space root. The archive is
+for manual installation; its download URL cannot be used as a SilverBullet
+subscription URL.
+
+For local tests and README generation, run `bun install --frozen-lockfile` to
+include development dependencies. A production install does not remove existing
+development packages; use `bun prune --production` before building locally if
+you need to exclude them from an existing checkout.
 
 ## AI SDK integration
 

@@ -1,12 +1,10 @@
 # SilverBullet AI Plug
 
-This plug integrates various LLMs (Large Language Models) into [SilverBullet](https://silverbullet.md/), the markdown-based note taking tool, allowing users to perform various AI-related tasks directly within their notes. It requires SilverBullet to work, and also access to either a self-hosted or SaaS LLM such as Ollama, OpenAI (ChatGPT), Google Gemini, etc.
+AI chat, search, tools and image generation inside [SilverBullet](https://silverbullet.md/). This fork uses Vercel AI SDK for text generation, streaming, structured output, tool execution, embeddings and images. Configure your own provider credentials or a local service such as Ollama; no Vercel account is required.
 
-silverbullet-ai is very new and is still in early development.  It may not work as expected.  Please report any issues you encounter, or feature ideas.
+Supported providers include OpenAI, Google Gemini, Mistral, Ollama and services with OpenAI-compatible APIs, including OpenRouter. SilverBullet handles the note interface, Space Lua configuration, tool approvals and path permissions.
 
-If you are new here, start with either the `AI: Chat on current page` command or the custom templated prompts!
-
-**Warning**: Please backup your notes before using this plug.  It inserts and replaces text at certain points and isn't well-tested yet, so back up your data!
+Start with `AI: Open Assistant` or `AI: Chat on current page`. The plug can insert and replace note content, so keep backups of your space.
 
 ## Features
 
@@ -15,7 +13,7 @@ If you are new here, start with either the `AI: Chat on current page` command or
 - **AI Assistant Panel**: Right-side chat panel for persistent conversations across pages
 - **RAG (Retrieval Augmented Generation)**: Automatic vector embedding search for relevant context
 - **Context Enrichment**: Wiki-link parsing, template expansion, and custom enrichment functions
-- **AI Agents**: Create specialized AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
+- **AI Agents**: Create specialised AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
 - **AI Tools**: Built-in tools (read, create, update notes; search, navigate; execute Lua) with custom tool support and approval gates
 - **Templated Prompts**: Define custom prompts as pages or in Space Lua with multiple insertion modes
 - **Vector Embeddings**: Chunk-based embeddings stored in SilverBullet's datastore for semantic search
@@ -23,6 +21,7 @@ If you are new here, start with either the `AI: Chat on current page` command or
 - **Image Generation**: DALL-E integration with auto-upload and caption insertion
 - **Bundled Prompts**: Generate tags, suggest page names, generate frontmatter, enhance notes
 - **Provider Support**: OpenAI, Google Gemini, Ollama, Mistral AI, Perplexity AI, OpenRouter, any OpenAI-compatible API
+- **MCP tools**: Connect remote MCP servers through Vercel AI SDK, with tool approval controls
 
 <!-- end-features -->
 
@@ -38,14 +37,14 @@ New responses are always appended to the end of the page.
 - **AI: Execute AI Prompt from Custom Template**: Executes an AI prompt template. Supports two modes:
 1. Page-based: Pass SlashCompletionOption with templatePage to read template from a page
 2. Direct: Pass SpaceLuaPromptOptions with template string directly
-- **AI: Select Text Model from Config**: Prompts the user to select a text/llm model from the configured models.
-Supports both legacy textModels config and new providers config with dynamic discovery.
+- **AI: Select Text Model from Config**: Prompts the user to select a text model from the configured models.
+Supports `textModels` and `providers` configuration with model discovery.
 - **AI: Select Image Model from Config**: Prompts the user to select an image model from the configured models.
-Supports both legacy imageModels config and new providers config with dynamic discovery.
+Supports `imageModels` and `providers` configuration with model discovery.
 - **AI: Select Embedding Model from Config**: Prompts the user to select an embedding model from the configured models.
-Supports both legacy embeddingModels config and new providers config with dynamic discovery.
+Supports `embeddingModels` and `providers` configuration with model discovery.
 - **AI: Refresh Model List**: Command to clear cache and refresh all model lists
-- **AI: Refresh Config**: Command to reload AI lua config and re-initialize providers
+- **AI: Refresh Config**: Command to reload AI lua config and reinitialise providers
 - **AI: Reset Selected Models**: Command to clear selected models from clientStore and revert to defaults
 - **AI: Select Agent**: Prompts the user to select an AI agent from available agents.
 - **AI: Clear Agent**: Clears the currently selected AI agent.
@@ -104,7 +103,7 @@ config.set {
 
 With this configuration:
 
-- **"AI: Select Text Model"** shows all available models from each provider
+- **"AI: Select Text Model from Config"** shows all available models from each provider
 - **"AI: Refresh Model List"** updates the cached model lists
 - `preferredModels` appear first in the picker (marked with ★)
 
@@ -114,7 +113,7 @@ With this configuration:
 |--------|-------------|
 | `apiKey` | API key for the provider |
 | `baseUrl` | Custom API endpoint |
-| `useProxy` | Use SilverBullet's proxy (default: true, set false for local services) |
+| `useProxy` | Use SilverBullet's proxy. Set `false` for direct browser requests; the endpoint must allow browser access. |
 | `preferredModels` | Models shown first in picker |
 | `fetchModels` | Fetch models from API (default: true). Set false if API doesn't support it |
 | `provider` | Explicit provider type when key name doesn't match (e.g., `provider = "openai"` for OpenRouter) |
@@ -235,7 +234,7 @@ You can use template notes to create custom prompts. Template notes must have:
 - `aiprompt` object with a `description` key
 - Optionally, `aiprompt.systemPrompt` to override the system prompt
 
-Example template to summarize the current note:
+Example template to summarise the current note:
 
 ``` markdown
 ---
@@ -254,40 +253,74 @@ ${readPage(@page.ref)}
 
 Run `AI: Execute AI Prompt from Custom Template` to use your templates.
 
-## Build
+## Build and test
+
+Use **Bun 1.4.4**, as specified in `.bun-version`. From a clean checkout, install production dependencies and build the complete distribution:
+
+```shell
+bun install --production --frozen-lockfile
+bun run dist
+```
+
+The SilverBullet compiler produces these files in `dist/`:
+
+| File | Purpose |
+|------|---------|
+| `silverbullet-ai.plug.js` | Compiled plug for the space's `_plug` folder |
+| `silverbullet-ai-library.md` | Space Lua functions, widgets and prompt templates for the space root |
+| `PLUG.md` | Library Manager entry for published releases |
+
+`bun run build` compiles just the plug to `silverbullet-ai.plug.js` in the repository root.
+
+For development and unit tests:
 
 ```shell
 bun install --frozen-lockfile
-bun run build
+bun run test
 ```
 
-Copy the resulting `.plug.js` file into your space's `_plug` folder:
+A production install leaves previously installed development packages in place. Use `bun prune --production` to remove them from an existing checkout.
 
-```shell
-bun run build && cp *.plug.js /my/space/_plug/
-```
+See [Development](docs/Development.md) for browser tests, integration tests and the AI SDK implementation.
+
+### Continuous integration
+
+Every push to `develop` or `main`, and every pull request targeting either branch, runs the test suite. A separate build job waits for the tests to pass, installs only production dependencies and builds the distribution.
+
+Each successful build uploads the three distribution files as an Actions artefact named `silverbullet-ai-<commit SHA>`, retained for **30 days**. Download it from the Actions run linked to the commit's build check. GitHub requires you to sign in to download artefacts.
+
+The release workflow runs on version tags or through a manual trigger. It tests the code, builds with production dependencies and attaches the distribution files to a GitHub release.
 
 ## Installation
 
-### Library Manager (Recommended)
+Requires SilverBullet **2.11.0 or later**. The plug is built against the SilverBullet 2.12 SDK.
 
-Requires SilverBullet v2.11.0+
+### Development builds
 
-1. Run `Library: Install` command
-2. Enter one of the following:
+1. Open the commit's build check or the [Build and Test workflow](https://github.com/kernitus/silverbullet-ai/actions/workflows/build.yml).
+2. Open a successful run and download its `silverbullet-ai-<commit SHA>` artefact.
+3. Extract the archive and copy `silverbullet-ai.plug.js` into your space's `_plug` folder.
+4. Copy `silverbullet-ai-library.md` into the space root.
+5. Run `Sync: Now` in SilverBullet to load the plug and library.
 
-**Latest release:**
+Repeat these steps to install another build. Actions artefacts support manual installation; they do not provide a SilverBullet subscription URL or automatic updates. `PLUG.md` is intended for published releases, so use the compiled plug and combined library for an artefact installation.
+
+### Published releases
+
+For a release published by this fork, run `Library: Install` and enter:
+
+```text
+ghr:kernitus/silverbullet-ai/PLUG.md
 ```
-ghr:justyns/silverbullet-ai/PLUG.md
+
+For a specific version, insert its tag before `/PLUG.md`:
+
+```text
+ghr:kernitus/silverbullet-ai@<tag>/PLUG.md
 ```
 
-**Specific release:**
-```
-ghr:justyns/silverbullet-ai@0.9.1/PLUG.md
-```
+Check [GitHub Releases](https://github.com/kernitus/silverbullet-ai/releases) for published tags. Pushes to `develop` produce Actions artefacts; they do not publish releases.
 
-See [GitHub Releases](https://github.com/justyns/silverbullet-ai/releases) for available versions.
+Use one installation method at a time. When switching from a manual installation to Library Manager, remove the manually copied plug and combined library to avoid duplicate definitions.
 
-**Upgrading?** If you have an old version in `_plug/`, delete it before reinstalling via Library Manager.
-
-See the [documentation](https://ai.silverbullet.md/) for full configuration details.
+See the [upstream documentation](https://ai.silverbullet.md/) for additional configuration details and the [local development guide](docs/Development.md) for this fork's build instructions.

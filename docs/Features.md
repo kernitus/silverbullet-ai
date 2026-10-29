@@ -2,7 +2,7 @@
 - **AI Assistant Panel**: Right-side chat panel for persistent conversations across pages
 - **RAG (Retrieval Augmented Generation)**: Automatic vector embedding search for relevant context
 - **Context Enrichment**: Wiki-link parsing, template expansion, and custom enrichment functions
-- **AI Agents**: Create specialized AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
+- **AI Agents**: Create specialised AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
 - **AI Tools**: Built-in tools (read, create, update notes; search, navigate; execute Lua) with custom tool support and approval gates
 - **Templated Prompts**: Define custom prompts as pages or in Space Lua with multiple insertion modes
 - **Vector Embeddings**: Chunk-based embeddings stored in SilverBullet's datastore for semantic search
@@ -10,3 +10,4 @@
 - **Image Generation**: DALL-E integration with auto-upload and caption insertion
 - **Bundled Prompts**: Generate tags, suggest page names, generate frontmatter, enhance notes
 - **Provider Support**: OpenAI, Google Gemini, Ollama, Mistral AI, Perplexity AI, OpenRouter, any OpenAI-compatible API
+- **MCP tools**: Connect remote MCP servers through Vercel AI SDK, with tool approval controls
