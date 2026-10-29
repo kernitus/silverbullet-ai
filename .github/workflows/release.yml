@@ -42,6 +42,12 @@ jobs:
       - name: Run tests
         run: bun run test
 
+      - name: Check Codex account service
+        run: |
+          bun install --cwd codex-account --frozen-lockfile
+          bun run --cwd codex-account typecheck
+          bun run --cwd codex-account test
+
   release:
     needs: test
     runs-on: ubuntu-latest

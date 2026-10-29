@@ -242,6 +242,56 @@ try {
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",
   );
+  const account = await browser.newPage();
+  const accountErrors: string[] = [];
+  account.on("pageerror", (error) => accountErrors.push(error.message));
+  await account.setContent(
+    await readFile(
+      new URL("../assets/codex-account.html", import.meta.url),
+      "utf8",
+    ),
+  );
+  await account.evaluate(() => {
+    (globalThis as any).codexAccount = {
+      providerKey: "codex",
+      state: {
+        status: "pending",
+        userCode: "TEST-CODE",
+        verificationUrl: "https://auth.openai.com/codex/device",
+        interval: 1,
+      },
+    };
+    (globalThis as any).syscall = async (_name: string, fn: string) => {
+      if (fn === "silverbullet-ai.codexAccountStatus")
+        return { status: "authenticated", user: { email: "test@example.com" } };
+      if (fn === "silverbullet-ai.codexAccountLogout")
+        (globalThis as any).signedOut = true;
+    };
+  });
+  await account.addScriptTag({
+    content: await readFile(
+      new URL("../assets/codex-account.js", import.meta.url),
+      "utf8",
+    ),
+  });
+  assert.equal(await account.locator("#code").textContent(), "TEST-CODE");
+  assert.equal(
+    await account.locator("#verify").getAttribute("href"),
+    "https://auth.openai.com/codex/device",
+  );
+  await account.waitForFunction(() =>
+    document
+      .getElementById("status")!
+      .textContent!.includes("Using ChatGPT plan"),
+  );
+  assert.equal(await account.locator("#code").textContent(), "");
+  await account.locator("#logout").click();
+  assert.equal(
+    await account.evaluate(() => (globalThis as any).signedOut),
+    true,
+  );
+  assert.deepEqual(accountErrors, []);
+  console.log("Codex sign-in dialogue completed login polling and sign-out");
 } finally {
   await browser.close();
 }

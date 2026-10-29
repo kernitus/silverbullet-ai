@@ -483,3 +483,50 @@ test.each([false, true])(
       expect(onChunk.mock.calls.flat().join("")).toBe("Here is the note");
   },
 );
+
+test("Codex accounts use Responses with browser session credentials and discover current models", async () => {
+  const fetch = vi.fn(async (url: string) =>
+    url.endsWith("/models")
+      ? json({ models: ["future-model"] })
+      : json(reply("Account reply")),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const provider = new SDKProvider(
+    {
+      ...connection,
+      provider: "codex",
+      apiKey: "",
+      requireAuth: false,
+      baseUrl: "https://notes.example.com/api/chatgpt",
+    },
+    "future-model",
+  );
+  expect(provider.api).toBe("responses");
+  expect(await provider.listModels()).toEqual(["future-model"]);
+  expect((await provider.chat(user)).content).toBe("Account reply");
+  expect(fetch.mock.calls.at(-1)![0]).toBe(
+    "https://notes.example.com/api/chatgpt/responses",
+  );
+  const options = (
+    fetch.mock.calls.at(-1) as unknown as [string, RequestInit]
+  )[1];
+  expect(options.credentials).toBe("include");
+  expect(JSON.parse(String(options.body))).toMatchObject({
+    model: "future-model",
+    store: false,
+  });
+  expect(
+    () =>
+      new SDKProvider(
+        { ...connection, provider: "codex", api: "chat" },
+        "future-model",
+      ),
+  ).toThrow("Responses");
+  expect(
+    () =>
+      new SDKProvider(
+        { ...connection, provider: "codex", useProxy: true },
+        "future-model",
+      ),
+  ).toThrow("useProxy = false");
+});

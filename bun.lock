@@ -11,6 +11,7 @@
         "@ai-sdk/openai": "^4.0.104",
         "@ai-sdk/openai-compatible": "^3.0.80",
         "@cfworker/json-schema": "^4.1.1",
+        "@opencoredev/loginwithchatgpt-ai": ">=0.2.0 <1.0.0",
         "@silverbulletmd/silverbullet": "^2.12.0",
         "ai": "^7.0.156",
         "yaml": "^2.9.1",
@@ -153,6 +154,10 @@
     "@nodelib/fs.stat": ["@nodelib/fs.stat@2.0.5", "", {}, "sha512-RkhPPp2zrqDAQA/2jNhnztcPAlv64XdhIp7a7454A5ovI7Bukxgt7MX7udwAu3zg1DcpPU0rz3VV1SeaqvY4+A=="],
 
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
+
+    "@opencoredev/loginwithchatgpt-ai": ["@opencoredev/loginwithchatgpt-ai@0.2.0", "", { "dependencies": { "@opencoredev/loginwithchatgpt-core": "^0.2.0" }, "peerDependencies": { "@ai-sdk/openai": "^4.0.0", "ai": "^7.0.0" } }, "sha512-UlXeMUqQ0AngYOBunGAt+9oU/hrMCcIzV4Pq6V3eIaCV8TBYu9vgARyiipyrmG1d7YX60himqxI8k9LhacU7HA=="],
+
+    "@opencoredev/loginwithchatgpt-core": ["@opencoredev/loginwithchatgpt-core@0.2.0", "", {}, "sha512-PRzUWEYJepxkcYVvk/Uc7bc8YfUr50PWqNMjfNs/AZOF6/H73QykzFhjZJIG5cphIKrNdjOmvofuy25cH1F8ow=="],
 
     "@oxc-project/types": ["@oxc-project/types@0.151.0", "", {}, "sha512-J1yXrIlNDZVzE3ada310xeAw7nH8yCAyLPuUIsjKatFPmfn5bS1oW+cM+QsGOtVWd5nhSpbwZWx/rue+r5Z+PA=="],
 

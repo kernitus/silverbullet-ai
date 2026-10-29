@@ -4,6 +4,16 @@ requiredPermissions:
 assets:
   - "assets/*"
 functions:
+  codexAccountLogin:
+    path: src/codex.ts:codexAccountLogin
+    command:
+      name: "AI: Sign in to Codex Account"
+  codexAccountLogout:
+    path: src/codex.ts:codexAccountLogout
+    command:
+      name: "AI: Sign out of Codex Account"
+  codexAccountStatus:
+    path: src/codex.ts:codexAccountStatus
   queryAI:
     path: sbai.ts:queryAI
   chat:

@@ -1,3 +1,4 @@
+import { codexProvider } from "./codex.ts";
 import { ModelCatalog, providerDefaults } from "./providers/catalog.ts";
 import { clientStore, editor } from "@silverbulletmd/silverbullet/syscalls";
 import type { ProviderConfig, ProvidersConfig } from "./types.ts";
@@ -72,6 +73,15 @@ function createProviderForDiscovery(
 
   if (!providerDefaults[providerType.toLowerCase()]) return null;
   if (providerType === "gemini" && !apiKey) return null;
+  if (providerType === "codex")
+    return codexProvider({
+      provider: "codex",
+      baseUrl,
+      apiKey: "",
+      requireAuth: false,
+      useProxy,
+      timeout: config.timeout ?? defaults.timeout,
+    });
   return new ModelCatalog({
     provider: providerType.toLowerCase(),
     apiKey,

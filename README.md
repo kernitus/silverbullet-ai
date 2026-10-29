@@ -4,7 +4,7 @@ AI chat, search, tools and image generation inside [SilverBullet](https://silver
 
 OpenAI text models use the Responses API by default. Custom endpoints can select it with `api = "responses"`; see [OpenAI configuration](docs/Providers/OpenAI.md).
 
-Supported providers include OpenAI, Google Gemini, Mistral, Ollama and services with OpenAI-compatible APIs, including OpenRouter. SilverBullet handles the note interface, Space Lua configuration, tool approvals and path permissions.
+Supported providers include Codex accounts, OpenAI, Google Gemini, Mistral, Ollama and services with OpenAI-compatible APIs, including OpenRouter. SilverBullet handles the note interface, Space Lua configuration, tool approvals and path permissions.
 
 Start with `AI: Open Assistant` or `AI: Chat on current page`. The plug can insert and replace note content, so keep backups of your space.
 
@@ -71,6 +71,8 @@ Doesn't use the queue
 After installing the plug, you can access its features through the command palette. Configuration is done using Space Lua in your `CONFIG` page (or any page with a `space-lua` block).
 
 The assistant panel stores conversations as Vercel AI SDK `ModelMessage` arrays in SilverBullet’s browser client store. Text, tool calls, full tool results, reasoning and provider metadata are retained for subsequent turns. Displayed tool details are separate from the model messages. Legacy panel histories are not imported. Chat on a page remains a Markdown interface.
+
+To use your ChatGPT account’s Codex allowance, configure the [Codex account service](docs/Codex.md), then run **AI: Sign in to Codex Account**. The model picker discovers models available to that account.
 
 The panel supports Stop and recovery from completed SDK steps. Page content is included when you select **Attach current page**; otherwise the agent can use `read_note`. Native `create_note` and `edit_note` tools support restricted agents and preview changes before approval. Long conversations use bounded tool output and SDK-backed summarisation. The `research_notes` tool delegates read-only research with inherited note permissions. Arbitrary Lua requires `allowUnsafeLua = true` and is unavailable to path-restricted agents. See [agent capabilities](docs/Agents.md) and [execution and context settings](docs/Development.md).
 

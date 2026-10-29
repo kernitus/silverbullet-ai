@@ -1,0 +1,13 @@
+{
+  "name": "silverbullet-ai-codex-account",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "bun server.ts", "test": "bun test", "typecheck": "tsc --noEmit"},
+  "dependencies": {
+    "@opencoredev/loginwithchatgpt-server": ">=0.2.0 <1.0.0",
+    "eventsource-parser": "^3.0.6"
+  },
+  "devDependencies": {"@types/bun": "^1.4.4", "typescript": "^7.0.2"},
+  "packageManager": "bun@1.4.4",
+  "engines": {"bun": ">=1.4.4"}
+}

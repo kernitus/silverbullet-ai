@@ -4,6 +4,13 @@ import type { ProviderDefaults } from "../interfaces/Provider.ts";
 import { proxiedFetch } from "../proxy.ts";
 
 export const providerDefaults: Record<string, ProviderDefaults> = {
+  codex: {
+    baseUrl: "/api/chatgpt",
+    requireAuth: false,
+    useProxy: false,
+    showPricing: false,
+    timeout: 180000,
+  },
   openai: {
     baseUrl: "https://api.openai.com/v1",
     requireAuth: true,

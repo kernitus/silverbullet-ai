@@ -407,7 +407,7 @@ export async function configureSelectedModel(model: ModelConfig) {
   const resolvedApiKey = await resolveApiKey(configKey, model);
 
   // Determine if auth is required (provider config can override model config)
-  const requireAuth = model.requireAuth ?? true;
+  const requireAuth = model.requireAuth ?? getProviderDefaults(model.provider).requireAuth;
 
   if (requireAuth && !resolvedApiKey) {
     throw new Error(

@@ -30,3 +30,9 @@ e2e-tests/test-results/
 e2e-tests/playwright-report/
 e2e-tests/.auth/
 e2e-tests/node_modules/
+
+# Local account service state must stay outside the checkout
+codex-account/.env
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

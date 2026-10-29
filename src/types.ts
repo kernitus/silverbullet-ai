@@ -212,6 +212,7 @@ export type PathPermissions = {
 };
 
 export enum Provider {
+  Codex = "codex",
   OpenAI = "openai",
   Gemini = "gemini",
   Ollama = "ollama",

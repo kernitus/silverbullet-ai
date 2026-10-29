@@ -1,3 +1,4 @@
+import { codexProvider } from "../codex.ts";
 import {
   generateText,
   streamText,
@@ -31,6 +32,8 @@ import { toSDKTools, toUsage } from "./messages.ts";
 
 function sdkProvider(connection: ProviderConnection) {
   const c = connection;
+  if (c.provider === "codex")
+    throw new Error("Codex account access supports text models only.");
   const settings = {
     apiKey: c.apiKey,
     baseURL: c.baseUrl.replace(/\/$/, ""),
@@ -84,26 +87,39 @@ export class SDKProvider extends AbstractProvider {
       connection.api !== "chat"
     )
       throw new Error('Provider api must be "responses" or "chat".');
-    if (connection.api && connection.provider !== "openai")
+    if (connection.provider === "codex" && connection.api === "chat")
+      throw new Error("Codex accounts require the Responses API.");
+    if (
+      connection.api &&
+      connection.provider !== "openai" &&
+      connection.provider !== "codex"
+    )
       throw new Error(
         'The api setting applies to OpenAI and OpenAI-compatible providers (provider = "openai").',
       );
-    const provider = sdkProvider(connection);
+    const provider =
+      connection.provider === "codex"
+        ? codexProvider(connection)
+        : sdkProvider(connection);
     this.api =
-      connection.provider === "openai"
-        ? (connection.api ??
-          (new URL(connection.baseUrl).hostname === "api.openai.com"
-            ? "responses"
-            : "chat"))
-        : "chat" in provider
-          ? "chat"
-          : "native";
+      connection.provider === "codex"
+        ? "responses"
+        : connection.provider === "openai"
+          ? (connection.api ??
+            (new URL(connection.baseUrl).hostname === "api.openai.com"
+              ? "responses"
+              : "chat"))
+          : "chat" in provider
+            ? "chat"
+            : "native";
     this.languageModel =
       this.api === "responses" && "responses" in provider
         ? provider.responses(modelName)
         : "chat" in provider
           ? provider.chat(modelName)
-          : provider.languageModel(modelName);
+          : "languageModel" in provider
+            ? provider.languageModel(modelName)
+            : provider(modelName);
     this.catalog = new ModelCatalog(connection);
   }
 
@@ -113,6 +129,9 @@ export class SDKProvider extends AbstractProvider {
         openai: {
           // Conversations live in SilverBullet. The SDK replays items between tool steps.
           store: false,
+          ...(this.connection.provider === "codex"
+            ? { systemMessageMode: "developer" }
+            : {}),
           ...(this.reasoningEffort
             ? { reasoningEffort: this.reasoningEffort }
             : {}),
@@ -220,7 +239,9 @@ export class SDKProvider extends AbstractProvider {
   }
 
   listModels() {
-    return this.catalog.listModels();
+    return this.connection.provider === "codex"
+      ? codexProvider(this.connection).listModels()
+      : this.catalog.listModels();
   }
   override getModelCapabilities(model = this.modelName) {
     return this.catalog.getModelCapabilities(model);
