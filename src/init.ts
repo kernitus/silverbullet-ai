@@ -49,11 +49,9 @@ export let currentImageModel: ImageModelConfig;
 export let currentEmbeddingModel: EmbeddingModelConfig | undefined;
 
 // Track whether the user has explicitly toggled these during the current session
-let sessionSearchEmbeddingsToggled = false;
 let sessionShowReasoningToggled = false;
 
-export function setSessionToggle(key: "searchEmbeddings" | "showReasoning") {
-  if (key === "searchEmbeddings") sessionSearchEmbeddingsToggled = true;
+export function setSessionToggle(key: "showReasoning") {
   if (key === "showReasoning") sessionShowReasoningToggled = true;
 }
 
@@ -552,7 +550,6 @@ async function loadAndMergeSettings() {
     parseWikiLinks: true,
     bakeMessages: true,
     customEnrichFunctions: [],
-    searchEmbeddings: false,
     showReasoning: true,
     enableTools: true,
     skipToolApproval: false,
@@ -589,9 +586,6 @@ export async function initializeOpenAI(configure = true) {
 
   // Preserve session-only toggle states across settings reloads, but only if
   // the user explicitly toggled them during this session (not just whatever was cached)
-  const sessionSearchEmbeddings = sessionSearchEmbeddingsToggled
-    ? aiSettings?.chat?.searchEmbeddings
-    : undefined;
   const sessionShowReasoning = sessionShowReasoningToggled
     ? aiSettings?.chat?.showReasoning
     : undefined;
@@ -608,9 +602,6 @@ export async function initializeOpenAI(configure = true) {
     clearMCPClients();
 
     // Restore session-only toggles only if explicitly toggled by the user
-    if (sessionSearchEmbeddings !== undefined) {
-      aiSettings.chat.searchEmbeddings = sessionSearchEmbeddings;
-    }
     if (sessionShowReasoning !== undefined) {
       aiSettings.chat.showReasoning = sessionShowReasoning;
     }

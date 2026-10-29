@@ -7,9 +7,8 @@ The AI plug automatically enriches chat messages with relevant context before se
 When you send a message in chat, the plug can:
 
 1. **Parse wiki-links** - Extract content from linked pages
-2. **Search embeddings** - Find semantically related notes
-3. **Expand templates** - Render SilverBullet queries and templates
-4. **Run custom functions** - Execute your own enrichment logic
+2. **Expand templates** - Render SilverBullet queries and templates
+3. **Run custom functions** - Execute your own enrichment logic
 
 Each piece of context is wrapped as an "attachment" and inserted into the conversation in a cache-friendly order.
 
@@ -20,7 +19,6 @@ Text context is added to the conversation wrapped in a `<context type="…" name
 | Type | Description |
 |------|-------------|
 | `note` | Content from a wiki-linked page like `[[PageName]]` |
-| `rag` | Excerpts from semantically similar pages (embedding search) |
 | `custom` | Content added by custom enrichment functions |
 | `file` | Text extracted from an embedded file by a custom `ai.fileHandlers` handler |
 
@@ -34,7 +32,6 @@ Enable context enrichment features in your config:
 config.set("ai", {
   chat = {
     parseWikiLinks = true,      -- Extract content from [[wiki-links]]
-    searchEmbeddings = true,    -- Search indexed embeddings for context
     bakeMessages = true,        -- Render templates/queries before sending
     attachImages = true,        -- Send referenced images to vision models
     attachDocuments = false,    -- Send referenced PDFs to document-capable models
@@ -58,11 +55,15 @@ The content of the "Project Notes" page will be attached to your message, giving
 
 **Agent context:** Page-based agents (see [[Agents]]) can also include wiki-links in their page body. These become attachments that persist across the entire chat session.
 
-## Embedding Search
+## Note Search
 
-When `searchEmbeddings` is enabled and you have [[Configuration/Embedding Models|embeddings configured]], the plug searches your indexed notes for content semantically related to your message.
+The model calls `search_notes` when it needs to find notes. Text mode performs
+literal matching and returns page names, line numbers and snippets. Semantic
+mode searches indexed embeddings when an embedding model and indexing are
+configured. Both modes apply the agent's read permissions before returning results.
 
-Relevant excerpts are automatically included as context, enabling RAG (Retrieval Augmented Generation).
+Search results arrive as tool results. Chat enrichment does not automatically
+retrieve embedding snippets. See [[Tools]] for the search parameters.
 
 ## File Attachments (Vision & Documents)
 

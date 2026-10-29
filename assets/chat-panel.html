@@ -253,95 +253,6 @@
     background: var(--status-danger-bg);
   }
 
-  .rag-indicator {
-    font-size: 11px;
-    color: var(--subtle-color);
-    padding: 2px 8px;
-    background: var(--subtle-background-color);
-    border-radius: 4px;
-    cursor: pointer;
-    white-space: nowrap;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-
-  .rag-indicator.enabled {
-    color: var(--status-success-color);
-    background: var(--status-success-bg);
-  }
-
-  .rag-indicator.disabled {
-    color: var(--subtle-color);
-    opacity: 0.6;
-  }
-
-  .rag-indicator.searching {
-    color: var(--status-success-color);
-    animation: rag-pulse 1.5s ease-in-out infinite;
-  }
-
-  @keyframes rag-pulse {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-  }
-
-  /* RAG context - uses tool-call base styling */
-  .tool-call.rag-context .rag-icon {
-    margin-right: 4px;
-  }
-
-  .tool-call.rag-context .context-details {
-    padding: 8px 12px;
-    max-height: 250px;
-    overflow-y: auto;
-  }
-
-  .tool-call.rag-context .context-item {
-    margin-bottom: 8px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--modal-border-color);
-  }
-
-  .tool-call.rag-context .context-item:last-child {
-    margin-bottom: 0;
-    padding-bottom: 0;
-    border-bottom: none;
-  }
-
-  .tool-call.rag-context .context-item a {
-    color: var(--ui-accent-color);
-    text-decoration: none;
-    font-weight: 500;
-  }
-
-  .tool-call.rag-context .context-item a:hover {
-    text-decoration: underline;
-  }
-
-  .tool-call.rag-context .context-item .similarity {
-    color: var(--status-success-color);
-    font-size: 11px;
-    margin-left: 8px;
-    font-weight: 500;
-  }
-
-  .tool-call.rag-context .context-item blockquote {
-    margin: 4px 0 0 0;
-    padding: 4px 8px;
-    border-left: 2px solid var(--modal-border-color);
-    color: var(--subtle-color);
-    font-size: 12px;
-    background: var(--subtle-background-color);
-    border-radius: 0 4px 4px 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
   .ai-chat-messages {
     flex: 1;
     overflow-y: auto;
@@ -928,10 +839,6 @@
       <div id="token-display" class="token-display" title="Tokens used / Context limit">
         <span id="token-count">0</span><span class="token-separator"> / </span><span id="context-limit">--</span>
       </div>
-      <div id="rag-indicator" class="rag-indicator disabled" title="Embeddings search (RAG)">
-        <span id="rag-icon">🔍</span>
-        <span id="rag-status">RAG</span>
-      </div>
       <div id="reasoning-indicator" class="reasoning-indicator disabled" title="Show model reasoning (click to toggle)">
         <span id="reasoning-icon">💭</span>
         <span id="reasoning-status">Think</span>
@@ -950,9 +857,6 @@
           </div>
           <div class="overflow-divider"></div>
           <button id="overflow-new-chat-btn" class="overflow-menu-item">New chat</button>
-          <button id="overflow-rag-btn" class="overflow-menu-item overflow-toggle">
-            <span class="toggle-icon">🔍</span> <span id="overflow-rag-label">RAG</span>
-          </button>
           <button id="overflow-reasoning-btn" class="overflow-menu-item overflow-toggle">
             <span class="toggle-icon">💭</span> <span id="overflow-reasoning-label">Reasoning</span>
           </button>

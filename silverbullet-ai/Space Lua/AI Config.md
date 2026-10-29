@@ -284,11 +284,6 @@ config.define("ai.chat", {
       default = true,
       ui = { category = "AI", label = "Bake messages", priority = 68 },
     },
-    searchEmbeddings = {
-      type = "boolean",
-      description = "Whether to search embeddings for context (RAG)",
-      ui = { category = "AI", label = "Search embeddings in chat", priority = 66 },
-    },
     customEnrichFunctions = {
       type = "array",
       items = { type = "string" },

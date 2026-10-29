@@ -10,7 +10,6 @@ import type {
   AIAgentTemplate,
   Attachment,
   ChatMessage,
-  EmbeddingsContext,
   LuaToolDefinition,
   Tool,
   Usage,
@@ -193,7 +192,6 @@ export async function startPanelChat(
 ): Promise<{
   streamId?: string;
   error?: string;
-  embeddingsContext?: EmbeddingsContext;
 }> {
   try {
     await initIfNeeded();
@@ -292,17 +290,9 @@ export async function startPanelChat(
     };
 
     const cleanedMessages = await cleanMessagesForApi(messages);
-    const enrichOptions =
-      currentChatAgent?.aiagent?.searchEmbeddings !== undefined
-        ? { searchEmbeddings: currentChatAgent.aiagent.searchEmbeddings }
-        : undefined;
-    const { messagesWithAttachments } = await enrichChatMessages(
-      cleanedMessages,
-      undefined,
-      enrichOptions,
-    );
+    const { messagesWithAttachments } = await enrichChatMessages(cleanedMessages);
 
-    // Prepend page context after enrichment so RAG search uses original user content
+    // Prepend page context after message enrichment
     if (contextBlock) {
       const lastUserIdx = messagesWithAttachments.findLastIndex(
         (m) => m.message.role === "user",
@@ -336,31 +326,9 @@ export async function startPanelChat(
       }
     }
 
-    let embeddingsContext: EmbeddingsContext | undefined;
-    for (const { attachments } of messagesWithAttachments) {
-      const contextAttachment = attachments.find(
-        (a) => a.name === "_embeddingsContext",
-      );
-      if (contextAttachment) {
-        try {
-          embeddingsContext = JSON.parse(contextAttachment.content);
-        } catch {
-          /* ignore */
-        }
-        break;
-      }
-    }
-
-    const filteredMessagesWithAttachments = messagesWithAttachments.map(
-      ({ message, attachments }) => ({
-        message,
-        attachments: attachments.filter((a) => a.name !== "_embeddingsContext"),
-      }),
-    );
-
     const workingMessages = assembleMessagesWithAttachments(
       systemMessage,
-      filteredMessagesWithAttachments,
+      messagesWithAttachments,
       agentAttachments,
     );
 
@@ -374,7 +342,7 @@ export async function startPanelChat(
       },
     );
 
-    return { streamId, embeddingsContext };
+    return { streamId };
   } catch (error) {
     log.error("Error starting panel chat:", error);
     return { error: error instanceof Error ? error.message : String(error) };
@@ -637,11 +605,6 @@ async function getContextLimit(
 }
 
 export interface ChatStatus {
-  rag: {
-    enabled: boolean;
-    indexEnabled: boolean;
-    agentDisabledRag: boolean;
-  };
   reasoning: {
     enabled: boolean;
   };
@@ -653,24 +616,19 @@ export interface ChatStatus {
 }
 
 /**
- * Returns lightweight agent/RAG state for polling — no provider calls.
+ * Returns the selected agent for polling without provider calls.
  */
 export async function getPollState(): Promise<{
   agentRef: string | null;
-  ragEnabled: boolean;
 }> {
   await initIfNeeded();
   return {
     agentRef: currentChatAgent?.ref ?? null,
-    ragEnabled:
-      (currentChatAgent?.aiagent?.searchEmbeddings !== undefined
-        ? currentChatAgent.aiagent.searchEmbeddings
-        : aiSettings?.chat?.searchEmbeddings) ?? false,
   };
 }
 
 /**
- * Returns consolidated chat panel status including RAG, tokens, and model info.
+ * Returns consolidated chat panel status including reasoning, tokens and model information.
  */
 export async function getChatStatus(): Promise<ChatStatus> {
   await initIfNeeded();
@@ -683,26 +641,10 @@ export async function getChatStatus(): Promise<ChatStatus> {
     contextLimit = await getContextLimit(model.modelName, model.providerKey);
   }
 
-  const agentDisabledRag =
-    currentChatAgent?.aiagent?.searchEmbeddings === false;
-
   return {
-    rag: {
-      enabled:
-        (currentChatAgent?.aiagent?.searchEmbeddings !== undefined
-          ? currentChatAgent.aiagent.searchEmbeddings
-          : aiSettings?.chat?.searchEmbeddings) ?? false,
-      indexEnabled: aiSettings?.indexEmbeddings ?? false,
-      agentDisabledRag,
-    },
-    reasoning: {
-      enabled: aiSettings?.chat?.showReasoning ?? false,
-    },
+    reasoning: { enabled: aiSettings?.chat?.showReasoning ?? false },
     tokens: { ...sessionTokenUsage },
-    model: {
-      name: model?.name ?? null,
-      contextLimit,
-    },
+    model: { name: model?.name ?? null, contextLimit },
   };
 }
 
@@ -710,17 +652,13 @@ export async function getChatStatus(): Promise<ChatStatus> {
  * Toggles a chat setting for the current session only.
  */
 async function toggleChatSetting(
-  settingKey: "searchEmbeddings" | "showReasoning",
+  settingKey: "showReasoning",
   enabledMessage: string,
   disabledMessage: string,
 ): Promise<void> {
-  if (!aiSettings) {
+  if (!aiSettings?.chat) {
     await editor.flashNotification("Settings not loaded", "error");
     return;
-  }
-
-  if (!aiSettings.chat) {
-    aiSettings.chat = {};
   }
 
   const newValue = !(aiSettings.chat[settingKey] ?? false);
@@ -730,17 +668,6 @@ async function toggleChatSetting(
   await editor.flashNotification(
     newValue ? enabledMessage : disabledMessage,
     "info",
-  );
-}
-
-/**
- * Toggles the RAG (searchEmbeddings) setting for the current session
- */
-export function toggleRagEnabled(): Promise<void> {
-  return toggleChatSetting(
-    "searchEmbeddings",
-    "RAG enabled (session only)",
-    "RAG disabled (session only)",
   );
 }
 

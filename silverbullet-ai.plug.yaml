@@ -158,8 +158,6 @@ functions:
     path: src/chat-panel.ts:getPollState
   resetSessionTokenUsage:
     path: src/chat-panel.ts:resetSessionTokenUsage
-  toggleRagEnabled:
-    path: src/chat-panel.ts:toggleRagEnabled
   toggleReasoningEnabled:
     path: src/chat-panel.ts:toggleReasoningEnabled
   restorePanelState:

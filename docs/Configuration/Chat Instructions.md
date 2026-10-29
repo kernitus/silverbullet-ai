@@ -13,7 +13,6 @@ config.set {
       parseWikiLinks = true,
 
       -- Search embeddings for relevant context (requires indexEmbeddings)
-      searchEmbeddings = false,
 
       -- Render SilverBullet templates/queries before sending
       bakeMessages = true,

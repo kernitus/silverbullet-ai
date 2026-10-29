@@ -231,3 +231,42 @@ end
 Each entry has `name`, `description`, `parameters` (JSON Schema), `source`
 (`"lua"` or `"mcp"`), `mcpServer` (for MCP tools), `requiresApproval`, and
 `readOnly`.
+
+## Search notes
+
+`search_notes` is a built-in read-only tool available to the model when tools are
+enabled. It respects agent tool filters and `allowedReadPaths`.
+
+| Parameter | Meaning |
+|-----------|---------|
+| `query` | Required search text, up to 1,000 characters |
+| `mode` | `text` (default) or `semantic` |
+| `path` | Optional note name or folder scope |
+| `limit` | Maximum matches, from 1 to 50, default 20 |
+| `caseSensitive` | Text mode only, default `false` |
+
+Text mode works like `grep -F`: it finds literal text, including punctuation,
+and returns page names, one-based line numbers and snippets. It scans readable
+notes in name order, so use `path` to narrow searches in large spaces. It does
+not execute shell commands or interpret regular expressions. Results include
+`truncated` when further matches exist and a count of unreadable pages.
+
+Semantic mode requires enabled embedding indexing and a configured embedding
+model. It returns indexed passages with page references and similarity scores.
+The model can call `read_note` to read more of a matching page. Chat does not
+retrieve these passages automatically or display a separate RAG context panel.
+
+Example tool input:
+
+```json
+{"query": "TODO", "path": "Projects", "caseSensitive": true, "limit": 20}
+```
+
+### Space Lua
+
+`create_note`, `update_note` and `search_replace` can write notes containing
+`space-lua` blocks. SilverBullet loads those blocks as Space Lua code.
+`eval_lua` executes a Lua expression with access to SilverBullet APIs and requests
+approval unless approval is disabled in configuration. It is a broad execution
+tool: note path restrictions do not sandbox arbitrary Lua. Restricted agents can
+exclude it through their tool configuration.

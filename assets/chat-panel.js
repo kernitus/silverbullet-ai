@@ -39,14 +39,12 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
   const tokenDisplayEl = document.getElementById("token-display");
   const tokenCountEl = document.getElementById("token-count");
   const contextLimitEl = document.getElementById("context-limit");
-  const ragIndicatorEl = document.getElementById("rag-indicator");
   const reasoningIndicatorEl = document.getElementById("reasoning-indicator");
   const modelDisplayEl = document.getElementById("model-display");
   const modelNameEl = document.getElementById("model-name");
   const overflowBtn = document.getElementById("overflow-btn");
   const overflowMenu = document.getElementById("overflow-menu");
   const overflowExportBtn = document.getElementById("overflow-export-btn");
-  const overflowRagBtn = document.getElementById("overflow-rag-btn");
   const overflowReasoningBtn = document.getElementById("overflow-reasoning-btn");
   const overflowNewChatBtn = document.getElementById("overflow-new-chat-btn");
   const overflowModelNameEl = document.getElementById("overflow-model-name");
@@ -62,9 +60,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     return n.toLocaleString();
   }
 
-  let lastRagEnabled = false;
-  let lastRagIndexEnabled = false;
-  let lastAgentDisabledRag = false;
   let lastReasoningEnabled = false;
 
   async function updateChatStatus() {
@@ -100,24 +95,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
         }
       }
 
-      // Update RAG status
-      lastRagIndexEnabled = status.rag.indexEnabled;
-      lastAgentDisabledRag = status.rag.agentDisabledRag ?? false;
-      lastRagEnabled = status.rag.enabled && status.rag.indexEnabled;
-      ragIndicatorEl.classList.remove("enabled", "disabled", "searching");
-
-      if (lastRagEnabled) {
-        ragIndicatorEl.classList.add("enabled");
-        ragIndicatorEl.title = "RAG enabled (click to disable)";
-      } else {
-        ragIndicatorEl.classList.add("disabled");
-        if (!status.rag.indexEnabled) {
-          ragIndicatorEl.title = "Embeddings indexing is disabled in config";
-        } else {
-          ragIndicatorEl.title = "RAG disabled (click to enable)";
-        }
-      }
-
       // Update reasoning status
       lastReasoningEnabled = status.reasoning?.enabled ?? false;
       reasoningIndicatorEl.classList.remove("enabled", "disabled");
@@ -130,41 +107,13 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       }
 
       // Update overflow menu toggle states
-      overflowRagBtn.classList.toggle("enabled", lastRagEnabled);
       overflowReasoningBtn.classList.toggle("enabled", lastReasoningEnabled);
-      document.getElementById("overflow-rag-label").textContent = lastRagEnabled ? "RAG (on)" : "RAG (off)";
       document.getElementById("overflow-reasoning-label").textContent = lastReasoningEnabled
         ? "Reasoning (on)"
         : "Reasoning (off)";
     } catch (e) {
       console.error("Failed to update chat status:", e);
-      ragIndicatorEl.classList.add("disabled");
       reasoningIndicatorEl.classList.add("disabled");
-    }
-  }
-
-  function setRagSearching() {
-    if (lastRagEnabled) {
-      ragIndicatorEl.classList.remove("enabled", "disabled");
-      ragIndicatorEl.classList.add("searching");
-      ragIndicatorEl.title = "Searching embeddings...";
-    }
-  }
-
-  async function toggleRag() {
-    if (!lastRagIndexEnabled) {
-      await syscall(
-        "editor.flashNotification",
-        "Embeddings indexing is disabled. Enable 'indexEmbeddings' in AI config first.",
-        "error",
-      );
-      return;
-    }
-    try {
-      await syscall("system.invokeFunction", "silverbullet-ai.toggleRagEnabled");
-      await updateChatStatus();
-    } catch (e) {
-      console.error("Failed to toggle RAG:", e);
     }
   }
 
@@ -370,51 +319,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     return msgEl;
   }
 
-  function renderEmbeddingsContext(context) {
-    if (!context || !context.pages || context.pages.length === 0) {
-      return null;
-    }
-
-    const detailsEl = document.createElement("details");
-    detailsEl.className = "tool-call rag-context success";
-
-    const summaryEl = document.createElement("summary");
-    summaryEl.innerHTML =
-      `<span class="rag-icon">🔍</span> <span class="status">RAG</span> read_notes → ${context.pages.length} page${
-        context.pages.length > 1 ? "s" : ""
-      }`;
-    detailsEl.appendChild(summaryEl);
-
-    const contentEl = document.createElement("div");
-    contentEl.className = "context-details";
-
-    for (const page of context.pages) {
-      const itemEl = document.createElement("div");
-      itemEl.className = "context-item";
-
-      const linkEl = document.createElement("a");
-      linkEl.href = encodeURIComponent(page.name);
-      linkEl.textContent = page.name;
-      itemEl.appendChild(linkEl);
-
-      const simEl = document.createElement("span");
-      simEl.className = "similarity";
-      simEl.textContent = `${page.similarity}%`;
-      itemEl.appendChild(simEl);
-
-      if (page.excerpt) {
-        const excerptEl = document.createElement("blockquote");
-        excerptEl.textContent = page.excerpt;
-        itemEl.appendChild(excerptEl);
-      }
-
-      contentEl.appendChild(itemEl);
-    }
-
-    detailsEl.appendChild(contentEl);
-    return detailsEl;
-  }
-
   async function renderAllMessages() {
     messagesContainer.innerHTML = "";
 
@@ -519,7 +423,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
 
     sendBtn.disabled = true;
     userInput.disabled = true;
-    setRagSearching();
 
     const assistantEl = await renderMessage("assistant", "", true);
 
@@ -533,13 +436,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       if (result.streamId) {
         currentStreamId = result.streamId;
         isStreaming = true;
-
-        if (result.embeddingsContext) {
-          const contextEl = renderEmbeddingsContext(result.embeddingsContext);
-          if (contextEl) {
-            messagesContainer.insertBefore(contextEl, assistantEl);
-          }
-        }
 
         pollForChunks(result.streamId, assistantEl);
       } else if (result.error) {
@@ -613,13 +509,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       );
       updateAgentIndicator(agent);
       await updateChatStatus();
-      if (lastAgentDisabledRag) {
-        await syscall(
-          "editor.flashNotification",
-          "RAG disabled for this agent",
-          "info",
-        );
-      }
     } catch (e) {
       console.error("Failed to load current agent:", e);
     }
@@ -722,11 +611,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     newChat();
   });
 
-  overflowRagBtn.addEventListener("click", function () {
-    overflowMenu.classList.add("hidden");
-    toggleRag();
-  });
-
   overflowReasoningBtn.addEventListener("click", function () {
     overflowMenu.classList.add("hidden");
     toggleReasoning();
@@ -748,7 +632,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
     }
   });
 
-  ragIndicatorEl.addEventListener("click", toggleRag);
   reasoningIndicatorEl.addEventListener("click", toggleReasoning);
 
   panelTitleEl.addEventListener("click", async function () {
@@ -760,9 +643,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
       if (agent !== null && agent !== undefined) {
         updateAgentIndicator(agent);
         await updateChatStatus();
-        if (lastAgentDisabledRag) {
-          await syscall("editor.flashNotification", "RAG disabled for this agent", "info");
-        }
       }
     } catch (e) {
       console.error("Failed to open agent selector:", e);
@@ -813,7 +693,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
   loadCurrentAgent();
   userInput.focus();
 
-  // Poll for agent/RAG changes triggered externally (e.g. command palette)
+  // Poll for agent changes triggered externally (e.g. command palette)
   setInterval(async function () {
     if (displayedAgentRef === undefined) return; // not yet initialized
     try {
@@ -821,7 +701,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory";
         "system.invokeFunction",
         "silverbullet-ai.getPollState",
       );
-      if (state.agentRef !== displayedAgentRef || state.ragEnabled !== lastRagEnabled) {
+      if (state.agentRef !== displayedAgentRef) {
         await loadCurrentAgent();
       }
     } catch (_e) {

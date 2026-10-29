@@ -180,7 +180,7 @@ export type LuaToolDefinition = {
   mcpToolName?: string;
   trusted?: boolean;
   // Runs the tool in TS instead of through a Lua handler
-  execute?: (args: Record<string, unknown>) => Promise<ToolExecutionResult>;
+  execute?: (args: Record<string, unknown>, permissions?: PathPermissions) => Promise<ToolExecutionResult>;
 };
 
 export type AIAgentTemplate = {
@@ -195,7 +195,6 @@ export type AIAgentTemplate = {
     inheritBasePrompt?: boolean;
     allowedReadPaths?: string[];
     allowedWritePaths?: string[];
-    searchEmbeddings?: boolean;
   };
 };
 
@@ -234,7 +233,6 @@ export type ChatSettings = {
   customContext: string;
   parseWikiLinks: boolean;
   bakeMessages: boolean;
-  searchEmbeddings: boolean;
   showReasoning: boolean;
   customEnrichFunctions: string[];
   enableTools: boolean;

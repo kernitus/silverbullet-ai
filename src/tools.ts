@@ -38,6 +38,7 @@ import {
   supportedAttachmentKinds,
 } from "./init.ts";
 import { discoverMCPTools, executeMCPTool } from "./mcp/index.ts";
+import { buildSearchNotesTool } from "./search.ts";
 import { buildSkillTool, discoverSkills, SKILL_TOOL_NAME } from "./skills.ts";
 
 function validatePathPermission(
@@ -257,6 +258,7 @@ export async function discoverAllTools(): Promise<
     discoverMCPTools(aiSettings?.mcpServers),
     discoverSkills(),
   ]);
+  tools.set("search_notes", buildSearchNotesTool());
   for (const [name, def] of mcpTools) {
     tools.set(name, def);
   }
@@ -419,7 +421,7 @@ export async function executeTool(
     return await executeMCPTool(tool, args, aiSettings?.mcpServers);
   }
   if (tool.execute) {
-    return await tool.execute(args);
+    return await tool.execute(args, permissions);
   }
 
   try {

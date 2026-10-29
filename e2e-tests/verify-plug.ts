@@ -54,6 +54,69 @@ try {
   console.log(
     `SilverBullet worker loaded: ${Object.keys(manifest.functions).length} functions`,
   );
+
+  const panel = await browser.newPage();
+  const panelErrors: string[] = [];
+  panel.on("pageerror", (error) => panelErrors.push(error.message));
+  await panel.setContent(
+    await readFile(
+      new URL("../assets/chat-panel.html", import.meta.url),
+      "utf8",
+    ),
+    { waitUntil: "domcontentloaded" },
+  );
+  await panel.evaluate(() => {
+    (globalThis as any).syscall = async (name: string, ...args: unknown[]) => {
+      if (name === "markdown.markdownToHtml") return args[0];
+      if (name !== "system.invokeFunction") return undefined;
+      switch (args[0]) {
+        case "silverbullet-ai.getChatStatus":
+          return {
+            reasoning: { enabled: false },
+            tokens: { total_tokens: 0 },
+            model: { name: "test", contextLimit: 4096 },
+          };
+        case "silverbullet-ai.chatAgentState":
+          return null;
+        case "silverbullet-ai.getPollState":
+          return { agentRef: null };
+        case "silverbullet-ai.startPanelChat":
+          return { streamId: "test-stream" };
+        case "silverbullet-ai.getPanelChatChunk":
+          return {
+            chunks: ["Search is available through tools."],
+            status: "complete",
+          };
+        case "silverbullet-ai.postProcessToolCallHtml":
+          return args[1];
+        default:
+          return undefined;
+      }
+    };
+  });
+  await panel.addScriptTag({
+    content: await readFile(
+      new URL("../assets/chat-panel.js", import.meta.url),
+      "utf8",
+    ),
+  });
+  await panel.locator("#user-input").fill("Find my notes");
+  await panel.locator("#send-btn").click();
+  await panel.waitForFunction(
+    () =>
+      document.querySelector(".message.assistant:not(.streaming)")
+        ?.textContent === "Search is available through tools.",
+  );
+  assert.equal(
+    await panel
+      .locator("#rag-indicator, #overflow-rag-btn, .rag-context")
+      .count(),
+    0,
+  );
+  assert.deepEqual(panelErrors, []);
+  console.log(
+    "Chat panel loaded and completed a conversation without automatic RAG UI",
+  );
 } finally {
   await browser.close();
 }

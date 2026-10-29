@@ -17,6 +17,6 @@ Another helpful chat feature is the ability to specify [[Configuration/Chat Inst
 
 If [[Configuration|bakeMessages]] is set to true (it is by default), any Space Lua templates (`${...}`) and queries (`${query[[...]]}`) are rendered before being sent to the LLM.
 
-If `ai.indexEmbeddings` and `ai.chat.searchEmbeddings` are both enabled and [[Configuration/Embedding Models|an embedding model]] is properly configured, your existing notes will automatically be searched for relevant content (based on a semantic/similarity search using vector embeddings) and sent to the LLM for context.
+With tools enabled, the model can call `search_notes` for literal text search or optional semantic search. Retrieved notes are returned as tool results.
 
 In some cases, this removes the need to link directly to another note as the search will do it for you.  Do keep in mind that this increases the amount of information sent to the llm api and also reduces your control over what information is sent.

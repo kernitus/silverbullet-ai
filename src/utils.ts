@@ -16,7 +16,6 @@ import type {
   EnrichmentResult,
   MessageWithAttachments,
 } from "./types.ts";
-import { searchEmbeddingsForChat } from "./embeddings.ts";
 import { getCachedToolResult } from "./tools.ts";
 import {
   parseToolCallJson,
@@ -216,7 +215,6 @@ export async function convertPageToMessages(
 export async function enrichChatMessages(
   messages: ChatMessage[],
   _globalMetadata?: Record<string, any>,
-  enrichOptions?: { searchEmbeddings?: boolean },
 ): Promise<{ messagesWithAttachments: MessageWithAttachments[] }> {
   const result: MessageWithAttachments[] = [];
   let currentPage, pageMeta;
@@ -310,40 +308,6 @@ export async function enrichChatMessages(
       messageAttachments.push(...wikiResult.attachments);
     }
 
-    const searchEmbeddingsEnabled =
-      enrichOptions?.searchEmbeddings !== undefined
-        ? enrichOptions.searchEmbeddings
-        : aiSettings?.chat?.searchEmbeddings;
-    if (searchEmbeddingsEnabled && aiSettings?.indexEmbeddings) {
-      const searchResults = await searchEmbeddingsForChat(message.content);
-
-      if (searchResults.context.totalResults > 0) {
-        const snippets = searchResults.results
-          .map(
-            (page) =>
-              `<snippet page="${page.name}">\n${page.content}\n</snippet>`,
-          )
-          .join("\n");
-
-        const truncatedQuery =
-          message.content.length > 100
-            ? message.content.substring(0, 100) + "..."
-            : message.content;
-
-        messageAttachments.push({
-          name: truncatedQuery,
-          content: snippets,
-          type: "rag" as const,
-        });
-
-        messageAttachments.push({
-          name: "_embeddingsContext",
-          content: JSON.stringify(searchResults.context),
-          type: "embedding" as const,
-        });
-      }
-    }
-
     if (aiSettings?.chat?.bakeMessages) {
       // This copies the logic from the share plugin and renders all of the queries/templates
       // TODO: This can be disabled globally, but it might be useful to have a temporary toggle per page
@@ -380,7 +344,7 @@ export async function enrichChatMessages(
     }
 
     // Embedded files (images/PDFs/handler-resolved) join the same attachment
-    // list as wiki-link/RAG context, in document order, for unified assembly.
+    // list as wiki-link context, in document order, for unified assembly.
     if (enabledKinds.size > 0 || handlerExts.size > 0) {
       const files = await extractFilesFromMarkdown(
         enrichedContent,

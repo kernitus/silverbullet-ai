@@ -11,7 +11,7 @@ Start with `AI: Open Assistant` or `AI: Chat on current page`. The plug can inse
 <!-- start-features -->
 - **Interactive Chat**: Multi-turn conversations using the current note as the chat interface
 - **AI Assistant Panel**: Right-side chat panel for persistent conversations across pages
-- **RAG (Retrieval Augmented Generation)**: Automatic vector embedding search for relevant context
+- **Note search**: An explicit `search_notes` tool with literal text matching, line numbers and optional semantic search
 - **Context Enrichment**: Wiki-link parsing, template expansion, and custom enrichment functions
 - **AI Agents**: Create specialised AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
 - **AI Tools**: Built-in tools (read, create, update notes; search, navigate; execute Lua) with custom tool support and approval gates

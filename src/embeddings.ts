@@ -15,7 +15,7 @@ import {
   currentEmbeddingProvider,
   initIfNeeded,
 } from "../src/init.ts";
-import { log, showProgressModal } from "./utils.ts";
+import { isPathAllowed, log, showProgressModal } from "./utils.ts";
 import {
   clientStore,
   editor,
@@ -398,10 +398,16 @@ export async function searchEmbeddings(
   query: string | number[],
   numResults = 10,
   updateEditorProgress = false,
+  scope?: { allowedReadPaths?: string[]; path?: string },
 ): Promise<EmbeddingResult[]> {
   await initIfNeeded();
 
-  // Allow passing in pre-generated embeddings, but generate them if its a string
+  const allowed = (page: string) => {
+    const path = scope?.path?.replace(/\/+$/, "");
+    return isPathAllowed(page, scope?.allowedReadPaths) &&
+      (!path || page === path || page.startsWith(`${path}/`));
+  };
+  // Generate a query vector only when the caller supplied text.
   const startEmbeddingGeneration = Date.now();
   const queryEmbedding =
     typeof query === "string" ? await generateEmbeddings(query) : query;
@@ -433,7 +439,7 @@ export async function searchEmbeddings(
   let lastUpdateTime = Date.now();
   for (let i = 0; i < embeddings.length; i++) {
     const embedding = embeddings[i];
-    if (!canIndexPage(embedding.page)) {
+    if (!allowed(embedding.page) || !canIndexPage(embedding.page)) {
       // Even if we have previously indexed a page, skip it if it should be excluded
       continue;
     }
@@ -496,7 +502,7 @@ export async function searchEmbeddings(
     let lastUpdateTime = Date.now();
     for (let i = 0; i < summaries.length; i++) {
       const summary = summaries[i];
-      if (!canIndexPage(summary.page)) {
+      if (!allowed(summary.page) || !canIndexPage(summary.page)) {
         continue;
       }
       summaryResults.push({
@@ -530,9 +536,8 @@ export async function searchEmbeddings(
     results.push(...summaryResults);
   }
 
-  return results
-    .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, numResults);
+  results.sort((a, b) => b.similarity - a.similarity);
+  return numResults < 0 ? results : results.slice(0, numResults);
 }
 
 /**
