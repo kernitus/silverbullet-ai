@@ -330,6 +330,7 @@ function connectionFor(
     throw new Error(`Unsupported AI provider: ${provider}`);
   return {
     provider,
+    api: "api" in model ? model.api : undefined,
     apiKey,
     baseUrl: model.baseUrl || defaults.baseUrl,
     requireAuth: model.requireAuth ?? defaults.requireAuth,
@@ -433,6 +434,7 @@ export async function configureSelectedModel(model: ModelConfig) {
       providerConfig.useProxy ??
       getProviderDefaults(model.provider).useProxy,
     reasoningEffort: model.reasoningEffort ?? providerConfig.reasoningEffort,
+    api: model.api ?? providerConfig.api,
   };
 
   // Get timeout from provider config

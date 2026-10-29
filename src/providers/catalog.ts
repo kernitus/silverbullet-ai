@@ -1,4 +1,5 @@
 import { clientStore } from "@silverbulletmd/silverbullet/syscalls";
+import type { TextAPI } from "../types.ts";
 import type { ProviderDefaults } from "../interfaces/Provider.ts";
 import { proxiedFetch } from "../proxy.ts";
 
@@ -34,6 +35,7 @@ export const providerDefaults: Record<string, ProviderDefaults> = {
 };
 
 export type ProviderConnection = {
+  api?: TextAPI;
   provider: string;
   apiKey: string;
   baseUrl: string;

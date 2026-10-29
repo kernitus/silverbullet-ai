@@ -44,7 +44,7 @@ function sdkProvider(connection: ProviderConnection) {
   if (c.provider === "mistral") return createMistral(settings);
   if (
     c.provider === "openai" &&
-    new URL(c.baseUrl).hostname === "api.openai.com"
+    (c.api === "responses" || new URL(c.baseUrl).hostname === "api.openai.com")
   )
     return createOpenAI(settings);
   if (c.provider === "dalle") return createOpenAI(settings);
@@ -64,6 +64,7 @@ function sdkProvider(connection: ProviderConnection) {
 export class SDKProvider extends AbstractProvider {
   readonly languageModel: LanguageModel;
   private readonly catalog: ModelCatalog;
+  readonly api: "responses" | "chat" | "native";
 
   constructor(
     private readonly connection: ProviderConnection,
@@ -77,16 +78,46 @@ export class SDKProvider extends AbstractProvider {
       connection.useProxy,
       connection.timeout,
     );
+    if (
+      connection.api !== undefined &&
+      connection.api !== "responses" &&
+      connection.api !== "chat"
+    )
+      throw new Error('Provider api must be "responses" or "chat".');
+    if (connection.api && connection.provider !== "openai")
+      throw new Error(
+        'The api setting applies to OpenAI and OpenAI-compatible providers (provider = "openai").',
+      );
     const provider = sdkProvider(connection);
-    // Preserve Chat Completions compatibility for existing OpenAI configuration.
+    this.api =
+      connection.provider === "openai"
+        ? (connection.api ??
+          (new URL(connection.baseUrl).hostname === "api.openai.com"
+            ? "responses"
+            : "chat"))
+        : "chat" in provider
+          ? "chat"
+          : "native";
     this.languageModel =
-      "chat" in provider
-        ? provider.chat(modelName)
-        : provider.languageModel(modelName);
+      this.api === "responses" && "responses" in provider
+        ? provider.responses(modelName)
+        : "chat" in provider
+          ? provider.chat(modelName)
+          : provider.languageModel(modelName);
     this.catalog = new ModelCatalog(connection);
   }
 
   get providerOptions() {
+    if (this.api === "responses")
+      return {
+        openai: {
+          // Conversations live in SilverBullet. The SDK replays items between tool steps.
+          store: false,
+          ...(this.reasoningEffort
+            ? { reasoningEffort: this.reasoningEffort }
+            : {}),
+        },
+      };
     if (!this.reasoningEffort) return undefined;
     return this.connection.provider === "gemini"
       ? {

@@ -294,3 +294,17 @@ test("parseDefaultModelString resolves a configured provider key", async () => {
   assertEquals(model.modelName, "gemma3:1b");
   assertEquals(model.baseUrl, "http://nas:11434");
 });
+
+test("provider API selection reaches the SDK and a model can override it", async () => {
+  await syscall("mock.setConfig", "ai", {
+    providers: {
+      gateway: { provider: "openai", apiKey: "test-key", baseUrl: "https://gateway.example/v1", api: "responses" },
+    },
+  });
+  await initializeOpenAI(false);
+  const model = parseDefaultModelString("gateway:model")!;
+  const provider = await configureSelectedModel(model);
+  expect(provider.languageModel?.provider).toBe("openai.responses");
+  const overridden = await configureSelectedModel({ ...model, api: "chat" });
+  expect(overridden.languageModel?.provider).not.toBe("openai.responses");
+});

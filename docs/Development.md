@@ -60,6 +60,10 @@ Mistral; Ollama and other compatible endpoints use the OpenAI-compatible provide
 Ollama embeddings now use its `/v1/embeddings` endpoint.
 
 `src/providers/sdk.ts` connects the SDK to the existing SilverBullet configuration.
+OpenAI text requests use the SDK's Responses adapter by default. Provider or model
+configuration can select `api = "responses"` for compatible gateways or
+`api = "chat"` for endpoints that require Chat Completions. Responses requests
+use `store: false`; the SDK replays reasoning and tool results between steps.
 `src/providers/messages.ts` converts saved conversations and validates tool inputs.
 `src/providers/catalog.ts` retains model listing and Ollama metadata queries,
 which are separate from the SDK's inference APIs. MCP uses `@ai-sdk/mcp`.

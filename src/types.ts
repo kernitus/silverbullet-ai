@@ -252,7 +252,10 @@ export type PromptInstructions = {
   enhanceFrontMatterPrompt: string;
 };
 
+export type TextAPI = "responses" | "chat";
+
 export type ProviderConfig = {
+  api?: TextAPI;
   provider?: string; // Provider type: "openai", "gemini", "ollama" - defaults from key name
   apiKey?: string;
   baseUrl?: string;
@@ -313,6 +316,7 @@ export type AISettings = {
 };
 
 export type ModelConfig = {
+  api?: TextAPI;
   name: string;
   description: string;
   modelName: string;

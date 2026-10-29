@@ -2,6 +2,8 @@
 
 AI chat, search, tools and image generation inside [SilverBullet](https://silverbullet.md/). This fork uses Vercel AI SDK for text generation, streaming, structured output, tool execution, embeddings and images. Configure your own provider credentials or a local service such as Ollama; no Vercel account is required.
 
+OpenAI text models use the Responses API by default. Custom endpoints can select it with `api = "responses"`; see [OpenAI configuration](docs/Providers/OpenAI.md).
+
 Supported providers include OpenAI, Google Gemini, Mistral, Ollama and services with OpenAI-compatible APIs, including OpenRouter. SilverBullet handles the note interface, Space Lua configuration, tool approvals and path permissions.
 
 Start with `AI: Open Assistant` or `AI: Chat on current page`. The plug can insert and replace note content, so keep backups of your space.
@@ -112,6 +114,7 @@ With this configuration:
 | Option | Description |
 |--------|-------------|
 | `apiKey` | API key for the provider |
+| `api` | OpenAI API selection: `"responses"` or `"chat"`. Defaults to Responses for OpenAI and Chat Completions for custom compatible endpoints |
 | `baseUrl` | Custom API endpoint |
 | `useProxy` | Use SilverBullet's proxy. Set `false` for direct browser requests; the endpoint must allow browser access. |
 | `preferredModels` | Models shown first in picker |

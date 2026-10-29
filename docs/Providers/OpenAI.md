@@ -32,6 +32,44 @@ With this configuration:
 - **"AI: Refresh Model List"** updates the cached model list
 - `preferredModels` appear first in the picker (marked with ★)
 
+## API selection
+
+OpenAI text models use the Responses API through Vercel AI SDK by default.
+Text generation, streaming, structured output and note tool calls all use
+`/responses`. Conversations remain in SilverBullet; requests set `store: false`,
+and the SDK carries tool results and encrypted reasoning between tool steps.
+
+The `api` setting accepts `"responses"` or `"chat"`. For a custom endpoint that
+supports Responses, select it explicitly:
+
+```lua
+config.set {
+  ai = {
+    providers = {
+      gateway = {
+        provider = "openai",
+        baseUrl = "https://your-gateway.example/v1",
+        apiKey = "your-api-key",
+        api = "responses"
+      }
+    }
+  }
+}
+```
+
+Custom OpenAI-compatible endpoints default to Chat Completions because endpoint
+support cannot be inferred from the model name. For a model or server that only
+supports Chat Completions, set `api = "chat"`. Individual `textModels` entries
+can override their provider's `api` setting. An API error is reported directly;
+requests are never silently retried through another API.
+
+Gemini and Mistral use their native SDK providers. Embeddings and image generation
+use their own endpoints. Provider-hosted tools such as OpenAI web search require
+separate tool configuration; selecting Responses does not enable them automatically.
+
+See [OpenAI's Responses migration guide](https://developers.openai.com/api/docs/guides/migrate-to-responses)
+for the API's request and conversation model.
+
 ## Legacy Configuration
 
 !!! warning "Deprecated"
@@ -56,8 +94,9 @@ config.set {
 | Option | Description |
 |--------|-------------|
 | `apiKey` | Your OpenAI API key |
+| `api` | `"responses"` or `"chat"`; Responses is the default for the OpenAI endpoint |
 | `baseUrl` | Custom API endpoint (default: `https://api.openai.com/v1`) |
-| `useProxy` | Use SilverBullet's proxy (default: `true`) |
+| `useProxy` | Use SilverBullet's proxy (default: `false`) |
 | `preferredModels` | Array of model names to show first in the picker |
 
 ## Cost

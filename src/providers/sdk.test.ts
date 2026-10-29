@@ -14,19 +14,44 @@ const connection = {
 };
 const user = [{ role: "user" as const, content: "hello" }];
 const reply = (content: string) => ({
-  id: "chat-1",
-  object: "chat.completion",
-  created: 1,
+  id: "resp-1",
+  created_at: 1,
   model: "gpt-4o",
-  choices: [
+  output: [
     {
-      index: 0,
-      message: { role: "assistant", content },
-      finish_reason: "stop",
+      type: "message",
+      id: "msg-1",
+      role: "assistant",
+      content: [{ type: "output_text", text: content, annotations: [] }],
     },
   ],
-  usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
+  usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5 },
 });
+const streamReply = (content: string) => {
+  const response = reply(content);
+  return [
+    { type: "response.created", response },
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { type: "message", id: "msg-1" },
+    },
+    {
+      type: "response.output_text.delta",
+      item_id: "msg-1",
+      output_index: 0,
+      delta: content,
+    },
+    {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: response.output[0],
+    },
+    { type: "response.completed", response },
+  ]
+    .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+    .join("");
+};
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
@@ -44,22 +69,23 @@ test("SDK chat sends messages and reports usage", async () => {
     completion_tokens: 2,
     total_tokens: 5,
   });
-  expect(fetch.mock.calls[0][0]).toBe(
-    "https://api.openai.com/v1/chat/completions",
-  );
-  expect(JSON.parse(fetch.mock.calls[0][1].body).messages).toEqual(user);
+  expect(fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/responses");
+  const request = JSON.parse(fetch.mock.calls[0][1].body);
+  expect(request.input).toEqual([
+    { role: "user", content: [{ type: "input_text", text: "hello" }] },
+  ]);
+  expect(request.store).toBe(false);
+  expect(request.messages).toBeUndefined();
 });
 
 test("SDK chat surfaces provider errors, including errors inside a successful HTTP response", async () => {
   vi.stubGlobal(
     "fetch",
-    vi
-      .fn()
-      .mockResolvedValue(
-        json({
-          error: { message: "Rate limited", type: "rate_limit", code: "429" },
-        }),
-      ),
+    vi.fn().mockResolvedValue(
+      json({
+        error: { message: "Rate limited", type: "rate_limit", code: "429" },
+      }),
+    ),
   );
   await expect(
     new SDKProvider(connection, "gpt-4o").chat(user),
@@ -67,41 +93,14 @@ test("SDK chat surfaces provider errors, including errors inside a successful HT
 });
 
 test("SDK streaming emits text, usage and completion exactly once", async () => {
-  const chunks =
-    [
-      {
-        choices: [
-          {
-            index: 0,
-            delta: { role: "assistant", content: "Hello" },
-            finish_reason: null,
-          },
-        ],
-      },
-      {
-        choices: [
-          { index: 0, delta: { content: " world" }, finish_reason: "stop" },
-        ],
-      },
-      {
-        choices: [],
-        usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 },
-      },
-    ]
-      .map(
-        (chunk) =>
-          `data: ${JSON.stringify({ id: "chat-1", created: 1, model: "gpt-4o", ...chunk })}\n\n`,
-      )
-      .join("") + "data: [DONE]\n\n";
+  const chunks = streamReply("Hello world");
   vi.stubGlobal(
     "fetch",
-    vi
-      .fn()
-      .mockResolvedValue(
-        new Response(chunks, {
-          headers: { "content-type": "text/event-stream" },
-        }),
-      ),
+    vi.fn().mockResolvedValue(
+      new Response(chunks, {
+        headers: { "content-type": "text/event-stream" },
+      }),
+    ),
   );
   const onChunk = vi.fn();
   const onComplete = vi.fn();
@@ -130,37 +129,35 @@ test("SDK structured output uses the supplied JSON schema", async () => {
       },
     },
   });
-  expect(JSON.parse(fetch.mock.calls[0][1].body).response_format.type).toBe(
+  expect(JSON.parse(fetch.mock.calls[0][1].body).text.format.type).toBe(
     "json_schema",
   );
 });
 
 test("SDK Gemini keeps system instructions separate and carries tool thought signatures", async () => {
-  const fetch = vi
-    .fn()
-    .mockResolvedValue(
-      json({
-        candidates: [
-          {
-            content: {
-              role: "model",
-              parts: [
-                {
-                  functionCall: { name: "read_note", args: { page: "Note" } },
-                  thoughtSignature: "signature",
-                },
-              ],
-            },
-            finishReason: "STOP",
+  const fetch = vi.fn().mockResolvedValue(
+    json({
+      candidates: [
+        {
+          content: {
+            role: "model",
+            parts: [
+              {
+                functionCall: { name: "read_note", args: { page: "Note" } },
+                thoughtSignature: "signature",
+              },
+            ],
           },
-        ],
-        usageMetadata: {
-          promptTokenCount: 3,
-          candidatesTokenCount: 2,
-          totalTokenCount: 5,
+          finishReason: "STOP",
         },
-      }),
-    );
+      ],
+      usageMetadata: {
+        promptTokenCount: 3,
+        candidatesTokenCount: 2,
+        totalTokenCount: 5,
+      },
+    }),
+  );
   vi.stubGlobal("fetch", fetch);
   const provider = new SDKProvider(
     { ...connection, provider: "gemini", baseUrl: "https://example.com" },
@@ -297,3 +294,205 @@ test("SDK streaming errors reject without a completion callback", async () => {
   ).rejects.toThrow();
   expect(onComplete).not.toHaveBeenCalled();
 });
+
+test.each(["gpt-4o", "gpt-4.1", "gpt-5", "gpt-6-astra", "o3-pro"])(
+  "OpenAI model %s uses Responses by default",
+  async (model) => {
+    const fetch = vi.fn().mockResolvedValue(json(reply("answer")));
+    vi.stubGlobal("fetch", fetch);
+    await new SDKProvider(connection, model).chat(user);
+    expect(fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/responses");
+    expect(JSON.parse(fetch.mock.calls[0][1].body).model).toBe(model);
+  },
+);
+
+test("a custom OpenAI endpoint can explicitly select Responses", async () => {
+  const fetch = vi.fn().mockResolvedValue(json(reply("answer")));
+  vi.stubGlobal("fetch", fetch);
+  await new SDKProvider(
+    { ...connection, baseUrl: "https://gateway.example/v1", api: "responses" },
+    "model",
+  ).chat(user);
+  expect(fetch.mock.calls[0][0]).toBe("https://gateway.example/v1/responses");
+});
+
+test.each([
+  { ...connection, api: "chat" as const },
+  { ...connection, baseUrl: "https://compatible.example/v1" },
+])(
+  "Chat Completions remains available for an explicitly selected or compatible endpoint",
+  async (config) => {
+    const fetch = vi.fn().mockResolvedValue(
+      json({
+        id: "chat-1",
+        object: "chat.completion",
+        created: 1,
+        model: "legacy",
+        choices: [
+          {
+            index: 0,
+            message: { role: "assistant", content: "answer" },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const response = await new SDKProvider(config, "legacy").chat(user);
+    expect(response.content).toBe("answer");
+    expect(fetch.mock.calls[0][0]).toBe(`${config.baseUrl}/chat/completions`);
+  },
+);
+
+test("Responses failure never silently retries through Chat Completions", async () => {
+  const fetch = vi
+    .fn()
+    .mockResolvedValue(
+      json(
+        {
+          error: {
+            message: "Unsupported model",
+            type: "invalid_request_error",
+            code: "model_not_supported",
+          },
+        },
+        400,
+      ),
+    );
+  vi.stubGlobal("fetch", fetch);
+  await expect(
+    new SDKProvider(connection, "unknown").chat(user),
+  ).rejects.toThrow();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(fetch.mock.calls[0][0]).toBe("https://api.openai.com/v1/responses");
+});
+
+test("Responses receives configured reasoning effort", async () => {
+  const fetch = vi.fn().mockResolvedValue(json(reply("answer")));
+  vi.stubGlobal("fetch", fetch);
+  const provider = new SDKProvider(connection, "gpt-5");
+  provider.reasoningEffort = "high";
+  await provider.chat(user);
+  const request = JSON.parse(fetch.mock.calls[0][1].body);
+  expect(request.reasoning.effort).toBe("high");
+  expect(request.store).toBe(false);
+  expect(request.include).toContain("reasoning.encrypted_content");
+});
+
+test.each([false, true])(
+  "Responses tool loop replays function results and encrypted reasoning (streaming=%s)",
+  async (streaming) => {
+    const { runAgenticChat, runStreamingAgenticChat } = await import(
+      "../tools.ts"
+    );
+    const reasoning = {
+      type: "reasoning",
+      id: "rs-1",
+      summary: [],
+      encrypted_content: "encrypted-reasoning",
+    };
+    const call = {
+      type: "function_call",
+      status: "completed",
+      id: "fc-1",
+      call_id: "call-1",
+      name: "read_note",
+      arguments: '{"page":"Note"}',
+    };
+    const firstResponse = { ...reply(""), output: [reasoning, call] };
+    const firstStream = [
+      { type: "response.created", response: firstResponse },
+      { type: "response.output_item.added", output_index: 0, item: reasoning },
+      { type: "response.output_item.done", output_index: 0, item: reasoning },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { ...call, arguments: "" },
+      },
+      {
+        type: "response.function_call_arguments.delta",
+        item_id: "fc-1",
+        output_index: 1,
+        delta: call.arguments,
+      },
+      { type: "response.output_item.done", output_index: 1, item: call },
+      { type: "response.completed", response: firstResponse },
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join("");
+    const sse = (body: string) =>
+      new Response(body, { headers: { "content-type": "text/event-stream" } });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(streaming ? sse(firstStream) : json(firstResponse))
+      .mockResolvedValueOnce(
+        streaming
+          ? sse(streamReply("Here is the note"))
+          : json(reply("Here is the note")),
+      );
+    vi.stubGlobal("fetch", fetch);
+    const execute = vi
+      .fn()
+      .mockResolvedValue({ success: true, result: "Note contents" });
+    const parameters = {
+      type: "object",
+      properties: { page: { type: "string" } },
+      required: ["page"],
+    };
+    const onChunk = vi.fn();
+    const result = await (streaming ? runStreamingAgenticChat : runAgenticChat)(
+      {
+        provider: new SDKProvider(connection, "gpt-5"),
+        messages: [{ role: "user", content: "Read Note" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read_note",
+              description: "Read a note",
+              parameters,
+            },
+          },
+        ],
+        luaTools: new Map([
+          [
+            "read_note",
+            { description: "Read", handler: "", parameters, execute },
+          ],
+        ]),
+        onChunk,
+      },
+    );
+    expect(result.finalResponse).toBe("Here is the note");
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(
+      fetch.mock.calls.every(
+        (call) => call[0] === "https://api.openai.com/v1/responses",
+      ),
+    ).toBe(true);
+    const request = JSON.parse(fetch.mock.calls[1][1].body);
+    expect(request.store).toBe(false);
+    expect(request.input).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "function_call",
+          call_id: "call-1",
+          name: "read_note",
+        }),
+        expect.objectContaining({
+          type: "function_call_output",
+          call_id: "call-1",
+          output: "Note contents",
+        }),
+        expect.objectContaining({
+          type: "reasoning",
+          encrypted_content: "encrypted-reasoning",
+        }),
+      ]),
+    );
+    if (streaming)
+      expect(onChunk.mock.calls.flat().join("")).toBe("Here is the note");
+  },
+);
