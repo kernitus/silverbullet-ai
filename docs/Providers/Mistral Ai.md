@@ -1,11 +1,8 @@
 [Mistral AI](https://mistral.ai/) is a hosted service that offers an OpenAI-compatible API.
 
-Mistral has a dedicated provider (`MistralProvider`) in `src/providers/mistral.ts` that extends the OpenAI provider with two key behaviors:
-
-- **Tool calls**: Uses `tool_choice: "any"` to reliably trigger tool/MCP calls, then automatically switches to `"auto"` once tool results are present so Mistral returns a text response instead of looping indefinitely.
-- **Embeddings**: Routes `mistral-embed` through the OpenAI-compatible embeddings endpoint — no extra configuration needed.
-
-Use `provider = "mistral"` to enable these behaviors.
+Mistral text generation, tool calls and embeddings use Vercel AI SDK's
+`@ai-sdk/mistral` provider. Use `provider = "mistral"` to select it. Tool choice
+uses the SDK default, so the model can answer directly or request a tool.
 
 ## Provider Configuration (Recommended)
 
@@ -16,7 +13,7 @@ config.set {
   ai = {
     providers = {
       mistral = {
-        provider = "mistral",  -- Use "mistral" for correct tool_choice behavior
+        provider = "mistral",  -- Select the AI SDK Mistral provider
         apiKey = mistral_key,
         baseUrl = "https://api.mistral.ai/v1",
         preferredModels = {"mistral-large-latest", "mistral-medium"}
@@ -49,7 +46,7 @@ config.set {
       {
         name = "mistral-medium",
         modelName = "mistral-medium",
-        provider = "mistral",  -- Use "mistral", not "openai", to get correct tool_choice behavior
+        provider = "mistral",  -- Select the AI SDK Mistral provider
         baseUrl = "https://api.mistral.ai/v1",
         secretName = "MISTRAL_API_KEY"
       }
@@ -82,7 +79,7 @@ config.set {
 
 | Option | Description |
 |--------|-------------|
-| `provider` | Use `"mistral"` (recommended) or `"openai"`. Using `"mistral"` enables correct `tool_choice` behavior and embedding support. |
+| `provider` | Use `"mistral"` for the AI SDK Mistral provider. |
 | `apiKey` | Your Mistral API key |
 | `baseUrl` | Must be `"https://api.mistral.ai/v1"` |
 | `preferredModels` | Array of model names to show first in the picker |

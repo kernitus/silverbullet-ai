@@ -2,8 +2,6 @@ import { EmbeddingGenerationOptions } from "../types.ts";
 import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
 import { clientStore } from "@silverbulletmd/silverbullet/syscalls";
 
-import { proxiedFetch } from "../proxy.ts";
-
 export interface EmbeddingProviderInterface {
   name: string;
   apiKey: string;
@@ -19,12 +17,12 @@ export interface EmbeddingProviderInterface {
     options: EmbeddingGenerationOptions,
   ) => Promise<Array<number>>;
 
-  generateEmbeddingsBatch: (
-    texts: string[],
-  ) => Promise<Array<Array<number>>>;
+  generateEmbeddingsBatch: (texts: string[]) => Promise<Array<Array<number>>>;
 }
 
-export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInterface {
+export abstract class AbstractEmbeddingProvider
+  implements EmbeddingProviderInterface
+{
   apiKey: string;
   baseUrl: string;
   name: string;
@@ -51,16 +49,14 @@ export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInte
     this.timeout = timeout;
   }
 
-  protected fetch(url: string, options: RequestInit): Promise<Response> {
-    return proxiedFetch(url, options, this.useProxy, this.timeout, this.name);
-  }
-
   abstract _generateEmbeddings(
     options: EmbeddingGenerationOptions,
   ): Promise<Array<number>>;
 
   // Override in providers that support native batch API
-  async _generateEmbeddingsBatch(texts: string[]): Promise<Array<Array<number>>> {
+  async _generateEmbeddingsBatch(
+    texts: string[],
+  ): Promise<Array<Array<number>>> {
     // Default: fall back to sequential calls
     const results: Array<Array<number>> = [];
     for (const text of texts) {
@@ -71,10 +67,12 @@ export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInte
 
   async generateEmbeddings(options: EmbeddingGenerationOptions) {
     const cacheKey = `ai.embeddingCache.${await hashSHA256(
-      [this.modelName, options.text].join(""),
+      JSON.stringify([this.name, this.baseUrl, this.modelName, options.text]),
     )}`;
 
-    const cachedEmbedding = await clientStore.get(cacheKey) as Array<number> | undefined;
+    const cachedEmbedding = (await clientStore.get(cacheKey)) as
+      | Array<number>
+      | undefined;
     if (cachedEmbedding) {
       return cachedEmbedding;
     }
@@ -84,7 +82,9 @@ export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInte
     return embedding;
   }
 
-  async generateEmbeddingsBatch(texts: string[]): Promise<Array<Array<number>>> {
+  async generateEmbeddingsBatch(
+    texts: string[],
+  ): Promise<Array<Array<number>>> {
     // Check cache for each text, collect uncached
     const results: Array<Array<number> | null> = [];
     const uncachedIndices: number[] = [];
@@ -92,9 +92,11 @@ export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInte
 
     for (let i = 0; i < texts.length; i++) {
       const cacheKey = `ai.embeddingCache.${await hashSHA256(
-        [this.modelName, texts[i]].join(""),
+        JSON.stringify([this.name, this.baseUrl, this.modelName, texts[i]]),
       )}`;
-      const cached = await clientStore.get(cacheKey) as Array<number> | undefined;
+      const cached = (await clientStore.get(cacheKey)) as
+        | Array<number>
+        | undefined;
       if (cached) {
         results[i] = cached;
       } else {
@@ -115,7 +117,7 @@ export abstract class AbstractEmbeddingProvider implements EmbeddingProviderInte
         results[i] = embedding;
 
         const cacheKey = `ai.embeddingCache.${await hashSHA256(
-          [this.modelName, texts[i]].join(""),
+          JSON.stringify([this.name, this.baseUrl, this.modelName, texts[i]]),
         )}`;
         await clientStore.set(cacheKey, embedding);
       }

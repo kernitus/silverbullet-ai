@@ -1,91 +1,324 @@
 import { expect, test } from "vitest";
 import "./mocks/syscalls.ts";
 import { syscall } from "@silverbulletmd/silverbullet/syscalls";
-import { configureSelectedModel, currentModel, initializeOpenAI, modelSupportsTools, parseDefaultModelString } from "./init.ts";
+import { MockLanguageModelV3, simulateReadableStream } from "ai/test";
+import {
+  configureSelectedModel,
+  currentModel,
+  initializeOpenAI,
+  modelSupportsTools,
+  parseDefaultModelString,
+} from "./init.ts";
 import { runAgenticChat, runStreamingAgenticChat } from "./tools.ts";
-import type { ChatResponse, Tool } from "./types.ts";
-
-const noToolSupportError = new Error(
-  "HTTP error 400: registry.ollama.ai/library/gemma3:12b does not support tools",
-);
-
-const testTools: Tool[] = [{
-  type: "function",
-  function: {
-    name: "read_note",
-    description: "Read a note",
-    parameters: { type: "object", properties: {} },
+import { SDKProvider } from "./providers/sdk.ts";
+import type { Tool, LuaToolDefinition } from "./types.ts";
+const usage = {
+  inputTokens: { total: 2, noCache: 2, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 3, text: 3, reasoning: 0 },
+};
+const finishReason = { unified: "stop" as const, raw: "stop" };
+const testTools: Tool[] = [
+  {
+    type: "function",
+    function: {
+      name: "read_note",
+      description: "Read a note",
+      parameters: { type: "object", properties: {} },
+    },
   },
-}];
+];
 
-async function setupNonToolModel() {
+async function setup(model: MockLanguageModelV3) {
   await syscall("mock.setConfig", "ai", {
     providers: { ollama: { baseUrl: "http://localhost:11434/v1" } },
   });
   await initializeOpenAI(false);
-  const model = parseDefaultModelString("ollama:gemma3:12b")!;
-  await configureSelectedModel(model);
+  const provider = (await configureSelectedModel(
+    parseDefaultModelString("ollama:gemma3:12b")!,
+  )) as SDKProvider;
+  Object.defineProperty(provider, "languageModel", { value: model });
+  return provider;
 }
 
-test("runAgenticChat falls back to no tools when the model rejects tools", async () => {
-  await setupNonToolModel();
-  const toolsPerCall: (Tool[] | undefined)[] = [];
-
-  const result = await runAgenticChat({
-    messages: [{ role: "user", content: "Summarize [[My Page]]" }],
-    tools: testTools,
-    luaTools: new Map(),
-    chatFunction: (_msgs, tools): Promise<ChatResponse> => {
-      toolsPerCall.push(tools);
-      if (tools && tools.length > 0) {
-        return Promise.reject(noToolSupportError);
-      }
-      return Promise.resolve({ content: "answer without tools" });
+test("SDK tool loop falls back when the model rejects tools", async () => {
+  const model = new MockLanguageModelV3({
+    doGenerate: async ({ tools }) => {
+      if (tools?.length) throw new Error("Model does not support tools");
+      return {
+        content: [{ type: "text", text: "answer without tools" }],
+        finishReason,
+        usage,
+        warnings: [],
+      };
     },
   });
-
-  expect(result.finalResponse).toEqual("answer without tools");
-  expect(toolsPerCall).toEqual([testTools, undefined]);
-  expect(currentModel.supportsTools).toEqual(false);
-  expect(modelSupportsTools()).toEqual(false);
-});
-
-test("runStreamingAgenticChat falls back to no tools when the model rejects tools", async () => {
-  await setupNonToolModel();
-  let streamed = "";
-
-  const result = await runStreamingAgenticChat({
-    messages: [{ role: "user", content: "Summarize [[My Page]]" }],
+  const result = await runAgenticChat({
+    messages: [{ role: "user", content: "Summarise Note" }],
     tools: testTools,
     luaTools: new Map(),
-    streamFunction: (options): Promise<ChatResponse> => {
-      if (options.tools && options.tools.length > 0) {
-        return Promise.reject(
-          new Error('SSE error: {"error":{"message":"registry.ollama.ai/library/gemma3:12b does not support tools"}}'),
-        );
-      }
-      options.onChunk?.("answer ");
-      options.onChunk?.("streamed");
-      return Promise.resolve({ content: "answer streamed" });
+    provider: await setup(model),
+  });
+  expect(result.finalResponse).toBe("answer without tools");
+  expect(model.doGenerateCalls).toHaveLength(2);
+  expect(currentModel.supportsTools).toBe(false);
+  expect(modelSupportsTools()).toBe(false);
+});
+
+test("SDK streaming tool loop falls back when the model rejects tools", async () => {
+  const model = new MockLanguageModelV3({
+    doStream: async ({ tools }) => {
+      if (tools?.length) throw new Error("Model does not support tools");
+      return {
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start", id: "text" },
+            { type: "text-delta", id: "text", delta: "answer streamed" },
+            { type: "text-end", id: "text" },
+            { type: "finish", finishReason, usage },
+          ],
+        }),
+      };
     },
+  });
+  let streamed = "";
+  const result = await runStreamingAgenticChat({
+    messages: [{ role: "user", content: "hello" }],
+    tools: testTools,
+    luaTools: new Map(),
+    provider: await setup(model),
     onChunk: (chunk) => {
       streamed += chunk;
     },
   });
-
-  expect(result.finalResponse).toEqual("answer streamed");
-  expect(streamed).toEqual("answer streamed");
-  expect(currentModel.supportsTools).toEqual(false);
+  expect(result.finalResponse).toBe("answer streamed");
+  expect(streamed).toBe("answer streamed");
 });
 
-test("runAgenticChat still rejects on unrelated errors", async () => {
-  await setupNonToolModel();
-
-  await expect(runAgenticChat({
-    messages: [{ role: "user", content: "hi" }],
+test("SDK executes permitted tools and sends their results back to the model", async () => {
+  let executions = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: [
+      {
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "read_note",
+            input: "{}",
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        usage,
+        warnings: [],
+      },
+      {
+        content: [{ type: "text", text: "Final answer" }],
+        finishReason,
+        usage,
+        warnings: [],
+      },
+    ],
+  });
+  const luaTools = new Map<string, LuaToolDefinition>([
+    [
+      "read_note",
+      {
+        handler: "",
+        description: "Read",
+        parameters: {},
+        readOnly: true,
+        execute: async () => {
+          executions++;
+          return { success: true, result: "Note contents" };
+        },
+      },
+    ],
+  ]);
+  const result = await runAgenticChat({
+    messages: [{ role: "user", content: "hello" }],
     tools: testTools,
-    luaTools: new Map(),
-    chatFunction: () => Promise.reject(new Error("HTTP error 500: boom")),
-  })).rejects.toThrow("HTTP error 500");
-  expect(currentModel.supportsTools).toBeUndefined();
+    luaTools,
+    provider: await setup(model),
+  });
+  expect(executions).toBe(1);
+  expect(result.finalResponse).toBe("Final answer");
+  expect(result.usage?.total_tokens).toBe(10);
+  expect(JSON.stringify(model.doGenerateCalls[1].prompt)).toContain(
+    "Note contents",
+  );
+});
+
+test("SDK does not retry unrelated errors", async () => {
+  const model = new MockLanguageModelV3({
+    doGenerate: async () => {
+      throw new Error("HTTP error 500: boom");
+    },
+  });
+  await expect(
+    runAgenticChat({
+      messages: [{ role: "user", content: "hello" }],
+      tools: testTools,
+      luaTools: new Map(),
+      provider: await setup(model),
+    }),
+  ).rejects.toThrow("HTTP error 500");
+  expect(model.doGenerateCalls).toHaveLength(1);
+});
+
+test("SDK rejects invalid tool inputs before executing a note tool", async () => {
+  let executions = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: [
+      {
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "bad",
+            toolName: "read_note",
+            input: '{"page":123}',
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        usage,
+        warnings: [],
+      },
+      {
+        content: [{ type: "text", text: "Invalid input handled" }],
+        finishReason,
+        usage,
+        warnings: [],
+      },
+    ],
+  });
+  const tools: Tool[] = [
+    {
+      type: "function",
+      function: {
+        name: "read_note",
+        description: "Read",
+        parameters: {
+          type: "object",
+          properties: { page: { type: "string" } },
+          required: ["page"],
+        },
+      },
+    },
+  ];
+  const luaTools = new Map<string, LuaToolDefinition>([
+    [
+      "read_note",
+      {
+        handler: "",
+        description: "Read",
+        parameters: {},
+        readOnly: true,
+        execute: async () => {
+          executions++;
+          return { success: true, result: "Should not execute" };
+        },
+      },
+    ],
+  ]);
+  await runAgenticChat({
+    messages: [{ role: "user", content: "hello" }],
+    tools,
+    luaTools,
+    provider: await setup(model),
+    maxIterations: 2,
+  });
+  expect(executions).toBe(0);
+});
+
+test("SDK tool loop preserves note path permissions", async () => {
+  let executions = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: [
+      {
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "denied",
+            toolName: "read_note",
+            input: '{"page":"Private/Secret"}',
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        usage,
+        warnings: [],
+      },
+      {
+        content: [{ type: "text", text: "Access denied" }],
+        finishReason,
+        usage,
+        warnings: [],
+      },
+    ],
+  });
+  const luaTools = new Map<string, LuaToolDefinition>([
+    [
+      "read_note",
+      {
+        handler: "",
+        description: "Read",
+        parameters: {},
+        readOnly: true,
+        readPathParam: "page",
+        execute: async () => {
+          executions++;
+          return { success: true, result: "Private contents" };
+        },
+      },
+    ],
+  ]);
+  const result = await runAgenticChat({
+    messages: [{ role: "user", content: "hello" }],
+    tools: testTools,
+    luaTools,
+    provider: await setup(model),
+    permissions: { allowedReadPaths: ["Public/"] },
+  });
+  expect(executions).toBe(0);
+  expect(result.finalResponse).toBe("Access denied");
+  expect(JSON.stringify(model.doGenerateCalls[1].prompt)).not.toContain(
+    "Private contents",
+  );
+});
+
+test("SDK stops at the configured tool step limit", async () => {
+  const model = new MockLanguageModelV3({
+    doGenerate: {
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "call",
+          toolName: "read_note",
+          input: "{}",
+        },
+      ],
+      finishReason: { unified: "tool-calls", raw: "tool_calls" },
+      usage,
+      warnings: [],
+    },
+  });
+  const luaTools = new Map<string, LuaToolDefinition>([
+    [
+      "read_note",
+      {
+        handler: "",
+        description: "Read",
+        parameters: {},
+        readOnly: true,
+        execute: async () => ({ success: true, result: "Note contents" }),
+      },
+    ],
+  ]);
+  const result = await runAgenticChat({
+    messages: [{ role: "user", content: "hello" }],
+    tools: testTools,
+    luaTools,
+    provider: await setup(model),
+    maxIterations: 2,
+  });
+  expect(model.doGenerateCalls).toHaveLength(2);
+  expect(result.finalResponse).toContain("Maximum tool iterations reached");
 });

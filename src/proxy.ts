@@ -32,8 +32,11 @@ export function readResponseHeader(
   useProxy: boolean,
 ): string | undefined {
   if (useProxy) {
-    return res.headers.get(`x-proxy-header-${name}`) ??
-      res.headers.get(name) ?? undefined;
+    return (
+      res.headers.get(`x-proxy-header-${name}`) ??
+      res.headers.get(name) ??
+      undefined
+    );
   }
   return res.headers.get(name) ?? undefined;
 }
@@ -59,9 +62,8 @@ function unwrapProxyResponse(res: Response): Response {
   const status = readStatus(res, true);
   // Pass the body through rather than buffering it; the Response constructor
   // rejects a body for these statuses.
-  const body = status === 204 || status === 205 || status === 304
-    ? null
-    : res.body;
+  const body =
+    status === 204 || status === 205 || status === 304 ? null : res.body;
   return new Response(body, { status, headers });
 }
 
@@ -103,7 +105,9 @@ export async function proxiedFetch(
       headers: useProxy
         ? buildProxyHeaders(toHeaderRecord(options.headers))
         : options.headers,
-      signal: AbortSignal.timeout(timeout),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)])
+        : AbortSignal.timeout(timeout),
     });
     return useProxy ? unwrapProxyResponse(res) : res;
   } catch (error) {
@@ -115,4 +119,32 @@ export async function proxiedFetch(
     }
     throw error;
   }
+}
+
+/** Adapt the SDK fetch contract to SilverBullet's proxy without buffering streams. */
+export function sdkFetch(
+  useProxy: boolean,
+  timeout: number,
+  name: string,
+): typeof fetch {
+  return (input, init) => {
+    const request = input instanceof Request ? input : undefined;
+    return proxiedFetch(
+      request?.url ?? String(input),
+      {
+        ...(request
+          ? {
+              method: request.method,
+              headers: request.headers,
+              body: request.body,
+              signal: request.signal,
+            }
+          : {}),
+        ...init,
+      },
+      useProxy,
+      timeout,
+      name,
+    );
+  };
 }

@@ -1,3 +1,4 @@
+import { cosineSimilarity } from "ai";
 import type { IndexTreeEvent } from "@silverbulletmd/silverbullet/type/event";
 import type { MQMessage } from "@silverbulletmd/silverbullet/type/datastore";
 import type {
@@ -387,15 +388,6 @@ export async function generateEmbeddings(text: string): Promise<number[]> {
     throw new Error("No embedding provider found");
   }
   return await currentEmbeddingProvider.generateEmbeddings({ text });
-}
-
-// Full disclosure, I don't really understand how this part works - thanks chatgpt!
-//   ^ If anyone can make it better, please do.
-function cosineSimilarity(vecA: number[], vecB: number[]): number {
-  const dotProduct = vecA.reduce((sum, a, idx) => sum + a * vecB[idx], 0);
-  const magnitudeA = Math.sqrt(vecA.reduce((sum, val) => sum + val * val, 0));
-  const magnitudeB = Math.sqrt(vecB.reduce((sum, val) => sum + val * val, 0));
-  return dotProduct / (magnitudeA * magnitudeB);
 }
 
 /**

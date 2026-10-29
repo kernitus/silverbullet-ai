@@ -35,6 +35,41 @@ SilverBullet browser plug. Use `bun run test` to run the Vitest suite; `bun test
 selects Bun's separate test runner. CI uses the version in `.bun-version` and
 installs dependencies from `bun.lock` with `--frozen-lockfile`.
 
+## AI SDK integration
+
+Vercel AI SDK handles text generation, streaming, structured output, tool steps,
+embeddings and image generation. The provider packages cover OpenAI, Gemini and
+Mistral; Ollama and other compatible endpoints use the OpenAI-compatible provider.
+Ollama embeddings now use its `/v1/embeddings` endpoint.
+
+`src/providers/sdk.ts` connects the SDK to the existing SilverBullet configuration.
+`src/providers/messages.ts` converts saved conversations and validates tool inputs.
+`src/providers/catalog.ts` retains model listing and Ollama metadata queries,
+which are separate from the SDK's inference APIs. MCP uses `@ai-sdk/mcp`.
+
+SilverBullet retains note access controls, tool approvals, attachment handling,
+editor updates and embedding caching. SDK tool calls execute sequentially so note
+edits and approval dialogues keep their order. Automatic request retries are
+disabled to avoid repeating tool side effects. API credentials stay in the existing
+configuration and requests use SilverBullet's proxy when configured.
+
+The SDK is bundled into the browser plug. No Vercel deployment or account is
+required when using your configured model providers directly.
+
+After `bun run dist`, check the generated plug in Chromium:
+
+```shell
+bun install --cwd e2e-tests --frozen-lockfile
+cd e2e-tests
+bunx playwright install chromium
+bun run test:build
+```
+
+Set `SB_CHROME_PATH` to use an existing Chromium executable. This check loads the
+compiled module worker and verifies its SilverBullet manifest without API keys.
+The model regression tests use simulated provider responses; live provider tests
+still require the integration test setup below.
+
 ## Testing
 
 ### Unit Tests

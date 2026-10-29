@@ -1,5 +1,4 @@
 import { MCPClient } from "./client.ts";
-import { ProxiedHttpTransport } from "./http.ts";
 import { log } from "../utils.ts";
 import type { McpCallToolResult, McpToolDef } from "./types.ts";
 import type {
@@ -16,7 +15,7 @@ export type MCPClientFactory = (
 ) => MCPClient;
 
 const defaultFactory: MCPClientFactory = (_name, config) =>
-  new MCPClient(new ProxiedHttpTransport(config));
+  new MCPClient(config);
 
 let clientFactory: MCPClientFactory = defaultFactory;
 const clientCache = new Map<string, MCPClient>();
@@ -34,6 +33,11 @@ export function _setMCPClientFactory(factory: MCPClientFactory | null): void {
 }
 
 export function clearMCPClients(): void {
+  for (const client of clientCache.values()) {
+    void client
+      .close?.()
+      .catch((error) => log.warn("Failed to close MCP client", error));
+  }
   clientCache.clear();
   toolCache = undefined;
 }

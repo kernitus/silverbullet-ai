@@ -1,5 +1,4 @@
 import { ImageGenerationOptions } from "../types.ts";
-import { proxiedFetch } from "../proxy.ts";
 
 export interface ImageProviderInterface {
   name: string;
@@ -8,9 +7,7 @@ export interface ImageProviderInterface {
   modelName: string;
   useProxy: boolean;
   timeout: number;
-  generateImage: (
-    options: ImageGenerationOptions,
-  ) => Promise<any>;
+  generateImage: (options: ImageGenerationOptions) => Promise<any>;
 }
 
 export abstract class AbstractImageProvider implements ImageProviderInterface {
@@ -40,11 +37,7 @@ export abstract class AbstractImageProvider implements ImageProviderInterface {
     this.timeout = timeout;
   }
 
-  protected fetch(url: string, options: RequestInit): Promise<Response> {
-    return proxiedFetch(url, options, this.useProxy, this.timeout, this.name);
-  }
-
   abstract generateImage(
     options: ImageGenerationOptions,
-  ): Promise<string>;
+  ): Promise<{ data: Array<{ b64_json: string }> }>;
 }

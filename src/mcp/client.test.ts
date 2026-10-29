@@ -1,229 +1,109 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { MCPClient } from "./client.ts";
-import {
-  type JsonRpcRequest,
-  McpHttpError,
-  type McpTransport,
-  type RawMcpResponse,
-} from "./types.ts";
 
-// A scriptable fake transport. The handler maps a method name to a
-// `result`/`error` object, or `null` (notification / 202).
-type HandlerOut =
-  | { result?: Record<string, unknown>; error?: unknown; sessionId?: string }
-  | null;
-type Handler = (method: string, message: any) => HandlerOut;
+afterEach(() => vi.unstubAllGlobals());
 
-function makeTransport(handler: Handler) {
-  const calls: { message: any; headers: Record<string, string> }[] = [];
-  const transport: McpTransport = {
-    post(message, headers) {
-      calls.push({ message, headers });
-      const out = handler((message as any).method, message);
-      if (!out) {
-        return Promise.resolve({ status: 202, messages: [] } as RawMcpResponse);
-      }
-      const id = (message as JsonRpcRequest).id;
-      const msg = "error" in out && out.error
-        ? { jsonrpc: "2.0", id, error: out.error }
-        : { jsonrpc: "2.0", id, result: ("result" in out && out.result) || {} };
-      return Promise.resolve({
-        status: 200,
-        sessionId: "sessionId" in out ? out.sessionId : undefined,
-        messages: [msg as any],
-      } as RawMcpResponse);
-    },
-  };
-  return { transport, calls };
-}
-
-const initResult = {
-  protocolVersion: "2025-06-18",
-  capabilities: { tools: { listChanged: true } },
-  serverInfo: { name: "fake", version: "1.0" },
-};
-
-function baseHandler(extra?: Handler): Handler {
-  return (method, message) => {
-    if (method === "initialize") return { result: initResult, sessionId: "S1" };
-    if (method === "notifications/initialized") return null;
-    const e = extra?.(method, message);
-    if (e !== undefined) return e;
-    return { result: {} };
-  };
-}
-
-describe("MCPClient", () => {
-  test("initialize sends params, captures session, notifies initialized", async () => {
-    const { transport, calls } = makeTransport(baseHandler());
-    const client = new MCPClient(transport, {
-      clientName: "sb",
-      clientVersion: "9",
-    });
-    const res = await client.initialize();
-
-    expect(res.serverInfo?.name).toBe("fake");
-    expect(calls[0].message.method).toBe("initialize");
-    expect(calls[0].message.params.clientInfo).toEqual({
-      name: "sb",
-      version: "9",
-    });
-    expect(calls[0].message.params.protocolVersion).toBe("2025-06-18");
-    // initialize request itself carries no session/protocol headers yet
-    expect(calls[0].headers["Mcp-Session-Id"]).toBeUndefined();
-    expect(calls[0].headers["MCP-Protocol-Version"]).toBeUndefined();
-    // followed by the initialized notification, now carrying session + version
-    expect(calls[1].message.method).toBe("notifications/initialized");
-    expect(calls[1].headers["Mcp-Session-Id"]).toBe("S1");
-    expect(calls[1].headers["MCP-Protocol-Version"]).toBe("2025-06-18");
-  });
-
-  test("listTools auto-initializes and returns the tool list", async () => {
-    const { transport, calls } = makeTransport(
-      baseHandler((method) => {
-        if (method === "tools/list") {
-          return { result: { tools: [{ name: "echo", inputSchema: {} }] } };
-        }
-        return undefined as any;
-      }),
-    );
-    const client = new MCPClient(transport);
-    const tools = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["echo"]);
-    expect(calls[0].message.method).toBe("initialize");
-  });
-
-  test("callTool sends name + arguments and returns the result", async () => {
-    const { transport, calls } = makeTransport(
-      baseHandler((method, message) => {
-        if (method === "tools/call") {
-          const { a, b } = message.params.arguments;
-          return { result: { content: [{ type: "text", text: String(a + b) }] } };
-        }
-        return undefined as any;
-      }),
-    );
-    const client = new MCPClient(transport);
-    await client.initialize();
-    const r = await client.callTool("add", { a: 2, b: 3 });
-    expect(r.content?.[0].text).toBe("5");
-    const call = calls.find((c) => c.message.method === "tools/call")!;
-    expect(call.message.params.name).toBe("add");
-  });
-
-  test("includes session id + protocol version on post-init requests", async () => {
-    const { transport, calls } = makeTransport(
-      baseHandler((method) => {
-        if (method === "tools/list") return { result: { tools: [] } };
-        return undefined as any;
-      }),
-    );
-    const client = new MCPClient(transport);
-    await client.listTools();
-    const listCall = calls.find((c) => c.message.method === "tools/list")!;
-    expect(listCall.headers["Mcp-Session-Id"]).toBe("S1");
-    expect(listCall.headers["MCP-Protocol-Version"]).toBe("2025-06-18");
-  });
-
-  test("throws on a JSON-RPC error response", async () => {
-    const { transport } = makeTransport(
-      baseHandler((method) => {
-        if (method === "tools/call") {
-          return { error: { code: -32601, message: "Method not found" } };
-        }
-        return undefined as any;
-      }),
-    );
-    const client = new MCPClient(transport);
-    await client.initialize();
-    await expect(client.callTool("nope", {})).rejects.toThrow(/-32601|Method not found/);
-  });
-
-  test("throws if the transport returns no matching response", async () => {
-    const transport: McpTransport = {
-      post: () => Promise.resolve({ status: 200, messages: [] }),
-    };
-    const client = new MCPClient(transport);
-    await expect(client.initialize()).rejects.toThrow(/no response/i);
-  });
-
-  test("surfaces an uncorrelated error body as an HTTP error", async () => {
-    // e.g. a 401 with a JSON-RPC error body whose id is null
-    const transport: McpTransport = {
-      post: () =>
-        Promise.resolve({
-          status: 401,
-          messages: [
-            {
-              jsonrpc: "2.0",
-              id: null,
-              error: { code: -32001, message: "Unauthorized" },
-            } as any,
-          ],
-        }),
-    };
-    const client = new MCPClient(transport);
-    await expect(client.initialize()).rejects.toThrow(/HTTP 401/);
-  });
-
-  test("re-initializes and retries once when the session expires (HTTP 404)", async () => {
-    let session = "S1";
-    let expired = false;
-    let initCount = 0;
-    const { transport, calls } = makeTransport((method, message) => {
-      if (method === "initialize") {
-        initCount++;
-        session = `S${initCount}`;
-        expired = false;
-        return { result: initResult, sessionId: session };
-      }
-      if (method === "notifications/initialized") return null;
-      if (expired) throw new McpHttpError(404, "MCP server returned HTTP 404");
-      if (method === "tools/call") {
-        return { result: { content: [{ type: "text", text: "ok" }] } };
-      }
-      return { result: {} };
-    });
-
-    const client = new MCPClient(transport);
-    await client.initialize();
-    expired = true; // simulate a server restart / expired session
-
-    const result = await client.callTool("echo", {});
-    expect(result.content?.[0].text).toBe("ok");
-    expect(initCount).toBe(2);
-    // the retried call carries the new session id
-    const lastCall = calls[calls.length - 1];
-    expect(lastCall.message.method).toBe("tools/call");
-    expect(lastCall.headers["Mcp-Session-Id"]).toBe("S2");
-  });
-
-  test("gives up after one retry if the server keeps returning 404", async () => {
-    let initialized = false;
-    const transport: McpTransport = {
-      post: (message) => {
-        const method = (message as any).method;
-        if (method === "initialize") {
-          initialized = true;
-          return Promise.resolve({
-            status: 200,
-            sessionId: "S",
-            messages: [
-              { jsonrpc: "2.0", id: (message as any).id, result: initResult } as any,
-            ],
-          });
-        }
-        if (method === "notifications/initialized") {
-          return Promise.resolve({ status: 202, messages: [] });
-        }
-        return Promise.reject(
-          new McpHttpError(404, "MCP server returned HTTP 404"),
-        );
+test("SDK MCP client initialises, paginates tools, calls tools and closes through the proxy", async () => {
+  const methods: string[] = [];
+  const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    const request = JSON.parse(String(init.body));
+    methods.push(request.method);
+    if (!("id" in request)) return new Response(null, { status: 202 });
+    let result: unknown;
+    switch (request.method) {
+      case "initialize":
+        result = {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: {} },
+          serverInfo: { name: "test", version: "1" },
+        };
+        break;
+      case "tools/list":
+        result = request.params?.cursor
+          ? {
+              tools: [
+                {
+                  name: "second",
+                  inputSchema: { type: "object", properties: {} },
+                },
+              ],
+            }
+          : {
+              tools: [
+                {
+                  name: "first",
+                  inputSchema: { type: "object", properties: {} },
+                },
+              ],
+              nextCursor: "page-2",
+            };
+        break;
+      case "tools/call":
+        result = { content: [{ type: "text", text: "tool result" }] };
+        break;
+      default:
+        throw new Error(`Unexpected MCP method: ${request.method}`);
+    }
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+      {
+        headers: {
+          "x-proxy-status-code": "200",
+          "x-proxy-header-content-type": "application/json",
+          "x-proxy-header-mcp-session-id": "session-1",
+        },
       },
-    };
-    const client = new MCPClient(transport);
-    await client.initialize();
-    expect(initialized).toBe(true);
-    await expect(client.callTool("x", {})).rejects.toThrow(/HTTP 404/);
+    );
   });
+  vi.stubGlobal("fetch", fetch);
+  const client = new MCPClient({
+    url: "https://example.com/mcp",
+    headers: { Authorization: "Bearer test" },
+  });
+  try {
+    expect((await client.listTools()).map((t) => t.name)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(await client.callTool("first", {})).toMatchObject({
+      content: [{ type: "text", text: "tool result" }],
+    });
+    expect(methods).toEqual([
+      "initialize",
+      "notifications/initialized",
+      "tools/list",
+      "tools/list",
+      "tools/call",
+    ]);
+    expect(
+      fetch.mock.calls.every(([url]) => url === "/.proxy/example.com/mcp"),
+    ).toBe(true);
+    expect(
+      new Headers(fetch.mock.calls[0][1].headers).get(
+        "x-proxy-header-authorization",
+      ),
+    ).toBe("Bearer test");
+  } finally {
+    await client.close();
+  }
+  expect(fetch.mock.calls.at(-1)?.[1].method).toBe("DELETE");
+});
+
+test("SDK MCP client retries connection after failed initialisation", async () => {
+  const fetch = vi
+    .fn()
+    .mockImplementation(
+      async () => new Response("Unavailable", { status: 503 }),
+    );
+  vi.stubGlobal("fetch", fetch);
+  const client = new MCPClient({
+    url: "https://example.com/mcp",
+    timeout: 100,
+  });
+  await expect(client.listTools()).rejects.toThrow();
+  await expect(client.listTools()).rejects.toThrow();
+  expect(
+    fetch.mock.calls.filter(([, init]) => init.method === "POST"),
+  ).toHaveLength(2);
 });

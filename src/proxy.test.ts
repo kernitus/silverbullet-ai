@@ -34,9 +34,11 @@ test("proxiedFetch surfaces the upstream status and headers", async () => {
 });
 
 test("proxiedFetch proxies the URL exactly once and tunnels headers", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response("{}", { headers: { "x-proxy-status-code": "200" } }),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response("{}", { headers: { "x-proxy-status-code": "200" } }),
+    );
   vi.stubGlobal("fetch", fetchMock);
 
   await proxiedFetch(
@@ -56,9 +58,11 @@ test("proxiedFetch proxies the URL exactly once and tunnels headers", async () =
 });
 
 test("proxiedFetch tunnels headers given as a Headers instance", async () => {
-  const fetchMock = vi.fn().mockResolvedValue(
-    new Response("{}", { headers: { "x-proxy-status-code": "200" } }),
-  );
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue(
+      new Response("{}", { headers: { "x-proxy-status-code": "200" } }),
+    );
   vi.stubGlobal("fetch", fetchMock);
 
   await proxiedFetch(
@@ -91,6 +95,36 @@ test("proxiedFetch applies the configured timeout, not SilverBullet's", async ()
   );
 
   await expect(
-    proxiedFetch("https://example.com/v1/chat/completions", {}, true, 20, "Ollama"),
+    proxiedFetch(
+      "https://example.com/v1/chat/completions",
+      {},
+      true,
+      20,
+      "Ollama",
+    ),
   ).rejects.toThrow("Request to Ollama timed out after 0.02s");
+});
+
+test("proxiedFetch preserves caller cancellation", async () => {
+  const controller = new AbortController();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal!.addEventListener("abort", () =>
+            reject(init.signal!.reason),
+          );
+        }),
+    ),
+  );
+  const request = proxiedFetch(
+    "https://example.com",
+    { signal: controller.signal },
+    false,
+    1000,
+    "SDK",
+  );
+  controller.abort(new Error("Cancelled by caller"));
+  await expect(request).rejects.toThrow("Cancelled by caller");
 });

@@ -1,19 +1,23 @@
 import {
+  SDKProvider,
+  SDKEmbeddingProvider,
+  SDKImageProvider,
+} from "./providers/sdk.ts";
+import {
+  providerDefaults,
+  type ProviderConnection,
+} from "./providers/catalog.ts";
+import {
   clientStore,
   editor,
   system,
 } from "@silverbulletmd/silverbullet/syscalls";
-import { DallEProvider } from "./providers/dalle.ts";
-import { GeminiEmbeddingProvider, GeminiProvider } from "./providers/gemini.ts";
 import { ImageProviderInterface } from "./interfaces/ImageProvider.ts";
 import { EmbeddingProviderInterface } from "./interfaces/EmbeddingProvider.ts";
 import {
   type ProviderDefaults,
   ProviderInterface,
 } from "./interfaces/Provider.ts";
-import { OpenAIEmbeddingProvider, OpenAIProvider } from "./providers/openai.ts";
-import { MistralProvider } from "./providers/mistral.ts";
-import { OllamaEmbeddingProvider, OllamaProvider } from "./providers/ollama.ts";
 import { log } from "./utils.ts";
 import { clearMCPClients } from "./mcp/index.ts";
 import { inferProviderType } from "./model-discovery.ts";
@@ -149,13 +153,6 @@ export function getProviderConfig(providerName: string): ProviderConfig {
   return {};
 }
 
-const providerRegistry: Record<string, { defaults: ProviderDefaults }> = {
-  openai: OpenAIProvider,
-  gemini: GeminiProvider,
-  ollama: OllamaProvider,
-  mistral: MistralProvider,
-};
-
 const defaultProviderDefaults: ProviderDefaults = {
   baseUrl: "",
   requireAuth: true,
@@ -166,8 +163,7 @@ const defaultProviderDefaults: ProviderDefaults = {
 
 export function getProviderDefaults(providerType: string): ProviderDefaults {
   return (
-    providerRegistry[providerType.toLowerCase()]?.defaults ||
-    defaultProviderDefaults
+    providerDefaults[providerType.toLowerCase()] || defaultProviderDefaults
   );
 }
 
@@ -324,151 +320,53 @@ async function getAndConfigureEmbeddingModel() {
   await configureSelectedEmbeddingModel(selectedEmbeddingModel);
 }
 
+function connectionFor(
+  model: ModelConfig | ImageModelConfig | EmbeddingModelConfig,
+  timeout?: number,
+): ProviderConnection {
+  const provider = model.provider.toLowerCase();
+  const defaults = getProviderDefaults(
+    provider === "dalle" ? "openai" : provider,
+  );
+  if (provider !== "dalle" && !providerDefaults[provider])
+    throw new Error(`Unsupported AI provider: ${provider}`);
+  return {
+    provider,
+    apiKey,
+    baseUrl: model.baseUrl || defaults.baseUrl,
+    requireAuth: model.requireAuth ?? defaults.requireAuth,
+    useProxy: model.useProxy ?? defaults.useProxy,
+    timeout: timeout ?? defaults.timeout,
+  };
+}
+
 function setupImageProvider(model: ImageModelConfig, timeout?: number) {
-  const providerName = model.provider.toLowerCase();
-  const useProxy = model.useProxy ?? true;
-  const effectiveTimeout = timeout ?? 180000;
-  log("Provider name", providerName);
-  switch (providerName) {
-    case ImageProvider.DallE:
-      currentImageProvider = new DallEProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "https://api.openai.com/v1",
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case ImageProvider.Mock:
-      currentImageProvider = new MockImageProvider(apiKey, model.modelName);
-      break;
-    default:
-      throw new Error(
-        `Unsupported image provider: ${model.provider}. Please configure a supported provider.`,
-      );
-  }
+  currentImageProvider =
+    model.provider === ImageProvider.Mock
+      ? new MockImageProvider(apiKey, model.modelName)
+      : new SDKImageProvider(
+          connectionFor(model, timeout ?? 180000),
+          model.modelName,
+        );
 }
 
 function setupAIProvider(model: ModelConfig, timeout?: number) {
-  const providerName = model.provider.toLowerCase();
-  const useProxy = model.useProxy ?? true;
-  const defaults = getProviderDefaults(providerName);
-  const effectiveTimeout = timeout ?? defaults.timeout;
-  switch (providerName) {
-    case Provider.OpenAI:
-      currentAIProvider = new OpenAIProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "https://api.openai.com/v1",
-        model.requireAuth ?? defaults.requireAuth,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case Provider.Gemini:
-      currentAIProvider = new GeminiProvider(
-        apiKey,
-        model.modelName,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case Provider.Ollama:
-      currentAIProvider = new OllamaProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "http://localhost:11434/v1",
-        model.requireAuth ?? defaults.requireAuth,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case Provider.Mistral:
-      currentAIProvider = new MistralProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "https://api.mistral.ai/v1",
-        model.requireAuth ?? defaults.requireAuth,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case Provider.Mock:
-      currentAIProvider = new MockProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl,
-      );
-      break;
-    default:
-      throw new Error(
-        `Unsupported AI provider: ${model.provider}. Please configure a supported provider.`,
-      );
-  }
-
+  currentAIProvider =
+    model.provider === Provider.Mock
+      ? new MockProvider(apiKey, model.modelName, model.baseUrl)
+      : new SDKProvider(connectionFor(model, timeout), model.modelName);
   currentAIProvider.reasoningEffort = model.reasoningEffort;
-
   return currentAIProvider;
 }
 
 function setupEmbeddingProvider(model: EmbeddingModelConfig, timeout?: number) {
-  const providerName = model.provider.toLowerCase();
-  const useProxy = model.useProxy ?? true;
-  const defaults = getProviderDefaults(providerName);
-  const effectiveTimeout = timeout ?? defaults.timeout;
-  switch (providerName) {
-    case EmbeddingProvider.OpenAI:
-      currentEmbeddingProvider = new OpenAIEmbeddingProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "https://api.openai.com/v1",
-        model.requireAuth ?? true,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case EmbeddingProvider.Gemini:
-      currentEmbeddingProvider = new GeminiEmbeddingProvider(
-        apiKey,
-        model.modelName,
-        undefined,
-        model.requireAuth ?? true,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case EmbeddingProvider.Ollama:
-      currentEmbeddingProvider = new OllamaEmbeddingProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "http://localhost:11434",
-        model.requireAuth ?? false,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case EmbeddingProvider.Mistral:
-      currentEmbeddingProvider = new OpenAIEmbeddingProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl || "https://api.mistral.ai/v1",
-        model.requireAuth ?? true,
-        useProxy,
-        effectiveTimeout,
-      );
-      break;
-    case EmbeddingProvider.Mock:
-      currentEmbeddingProvider = new MockEmbeddingProvider(
-        apiKey,
-        model.modelName,
-        model.baseUrl,
-      );
-      break;
-    default:
-      throw new Error(
-        `Unsupported embedding provider: ${model.provider}. Please configure a supported provider.`,
-      );
-  }
+  currentEmbeddingProvider =
+    model.provider === EmbeddingProvider.Mock
+      ? new MockEmbeddingProvider(apiKey, model.modelName, model.baseUrl)
+      : new SDKEmbeddingProvider(
+          connectionFor(model, timeout),
+          model.modelName,
+        );
 }
 
 async function resolveApiKey(
@@ -542,7 +440,6 @@ export async function configureSelectedModel(model: ModelConfig) {
   // Get timeout from provider config
   const timeout =
     providerConfig.timeout ?? getProviderDefaults(model.provider).timeout;
-  log(`Provider config for "${configKey}":`, providerConfig);
   log(`Using timeout: ${timeout}ms (${timeout / 1000}s)`);
 
   currentModel = effectiveModel;

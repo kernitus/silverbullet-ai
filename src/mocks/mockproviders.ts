@@ -73,13 +73,10 @@ export class MockImageProvider extends AbstractImageProvider {
     super(apiKey, baseUrl, "mock", modelName, true, true, timeout);
   }
 
-  generateImage(_options: ImageGenerationOptions): Promise<string> {
-    return new Promise<string>((resolve) => {
-      setTimeout(() => {
-        resolve("https://example.com/mock-image.jpg");
-      }, 5);
-    });
+  async generateImage(_options: ImageGenerationOptions) {
+    return { data: [{ b64_json: "" }] };
   }
+
 }
 
 export class MockEmbeddingProvider extends AbstractEmbeddingProvider {

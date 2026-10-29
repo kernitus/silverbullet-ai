@@ -583,7 +583,7 @@ export async function streamChatOnPage() {
         messages: enrichedMessages,
         tools,
         luaTools,
-        streamFunction: (options) => currentAIProvider.streamChat(options),
+        provider: currentAIProvider,
         onChunk: (chunk) => {
           if (stillLoading) {
             // Replace loading message with first chunk
@@ -818,7 +818,7 @@ export async function chat(options: ChatOptions): Promise<ChatResult> {
           messages,
           tools,
           luaTools,
-          chatFunction: (msgs, t) => currentAIProvider.chat(msgs, t),
+          provider: currentAIProvider,
         });
 
         return {

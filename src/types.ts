@@ -1,10 +1,8 @@
+import type { ToolCallPart } from "ai";
+export type ProviderOptions = NonNullable<ToolCallPart["providerOptions"]>;
 import { ObjectValue } from "@silverbulletmd/silverbullet/type/index";
 
 import type { ToolExecutionResult } from "./tools.ts";
-
-export type sseEvent = {
-  data: string;
-};
 
 export type ResponseFormat =
   | { type: "text" }
@@ -123,7 +121,7 @@ export type ToolCall = {
     name: string;
     arguments: string;
   };
-  _raw?: Record<string, unknown>;
+  providerOptions?: ProviderOptions;
 };
 
 export type ChatMessage = {

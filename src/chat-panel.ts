@@ -404,7 +404,7 @@ async function runToolLoop(
     messages,
     tools,
     luaTools,
-    chatFunction: (msgs, t) => currentAIProvider.chat(msgs, t),
+    provider: currentAIProvider,
     onToolCall: (toolName, _args, result) => {
       const status = result.success ? "✓" : "✗";
       buffer.statusMessage = `${status} ${toolName}`;

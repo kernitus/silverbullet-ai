@@ -396,7 +396,7 @@ async function runExecutionTest(
     messages: [{ role: "user", content: test.prompt }],
     tools,
     luaTools,
-    chatFunction: (msgs, t) => provider.chat(msgs, t),
+    provider,
     onToolCall: (name, args, execResult) => {
       toolCalls.push({ name, args, result: execResult });
     },

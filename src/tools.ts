@@ -1,4 +1,14 @@
 import {
+  generateText,
+  streamText,
+  isStepCount,
+  type ModelMessage,
+  type StepResult,
+  type ToolSet,
+} from "ai";
+import type { ProviderInterface } from "./interfaces/Provider.ts";
+import { toModelMessages, toSDKTools, toUsage } from "./providers/messages.ts";
+import {
   asset,
   clientStore,
   editor,
@@ -15,11 +25,9 @@ import {
 import { getFileHandlerExts, resolveFileToAttachment } from "./files.ts";
 import type {
   ChatMessage,
-  ChatResponse,
   JsonSchemaObject,
   LuaToolDefinition,
   PathPermissions,
-  StreamChatOptions,
   Tool,
   Usage,
 } from "./types.ts";
@@ -315,7 +323,10 @@ export async function listTools(): Promise<
     parameters: def.parameters,
     source: def.source ?? "lua",
     mcpServer: def.mcpServer,
-    requiresApproval: toolRequiresApproval(def, aiSettings?.chat?.skipToolApproval),
+    requiresApproval: toolRequiresApproval(
+      def,
+      aiSettings?.chat?.skipToolApproval,
+    ),
     readOnly: def.readOnly === true,
   }));
 }
@@ -398,17 +409,17 @@ export async function executeTool(
     };
   }
 
+  const permCheck = validatePathPermission(tool, args, permissions);
+  if (!permCheck.allowed) {
+    return { success: false, error: permCheck.error };
+  }
+
   // MCP-sourced tools execute over HTTP instead of through a Lua handler.
   if (tool.source === "mcp") {
     return await executeMCPTool(tool, args, aiSettings?.mcpServers);
   }
   if (tool.execute) {
     return await tool.execute(args);
-  }
-
-  const permCheck = validatePathPermission(tool, args, permissions);
-  if (!permCheck.allowed) {
-    return { success: false, error: permCheck.error };
   }
 
   try {
@@ -840,17 +851,11 @@ async function processToolCalls(
   return { toolCallsText, toolMessages, attachmentMessages };
 }
 
-/**
- * Options for running an agentic chat with tool support
- */
 export type AgenticChatOptions = {
   messages: ChatMessage[];
   tools: Tool[];
   luaTools: Map<string, LuaToolDefinition>;
-  chatFunction: (
-    messages: ChatMessage[],
-    tools?: Tool[],
-  ) => Promise<ChatResponse>;
+  provider: ProviderInterface;
   onToolCall?: (
     toolName: string,
     args: Record<string, unknown>,
@@ -860,9 +865,6 @@ export type AgenticChatOptions = {
   permissions?: PathPermissions;
 };
 
-/**
- * Result from running an agentic chat
- */
 export type AgenticChatResult = {
   messages: ChatMessage[];
   finalResponse: string;
@@ -871,253 +873,172 @@ export type AgenticChatResult = {
   usage?: Usage;
 };
 
-/**
- * Runs an agentic chat loop that executes tool calls until we get a final response.
- * This is a reusable utility for both the chat panel and chat-on-page.
- */
-function aggregateUsage(
-  total: Usage | undefined,
-  add: Usage | undefined,
-): Usage | undefined {
-  if (!add) return total;
-  if (!total) {
-    return { ...add };
-  }
-  return {
-    prompt_tokens: total.prompt_tokens + add.prompt_tokens,
-    completion_tokens: total.completion_tokens + add.completion_tokens,
-    total_tokens: total.total_tokens + add.total_tokens,
-  };
-}
+export type StreamingAgenticChatOptions = AgenticChatOptions & {
+  onChunk?: (chunk: string) => void;
+  onReasoningChunk?: (chunk: string) => void;
+};
 
-// Some servers (e.g. Ollama) reject the whole request with a 400 when the
-// model can't do tool calling; detect that so we can retry without tools.
-function isNoToolSupportError(error: unknown): boolean {
-  return error instanceof Error && /does not support tools/i.test(error.message);
-}
-
-async function handleNoToolSupport(): Promise<void> {
-  const msg = `Model ${currentModel?.modelName} does not support tools, continuing without them`;
-  log.warn(msg);
-  if (currentModel) {
-    currentModel.supportsTools = false;
-  }
-  try {
-    await editor.flashNotification(msg, "info");
-  } catch {
-    // Not running in a client context
-  }
-}
-
-export async function runAgenticChat(
+export function runAgenticChat(
   options: AgenticChatOptions,
 ): Promise<AgenticChatResult> {
+  return runSDKChat(options, false);
+}
+
+export function runStreamingAgenticChat(
+  options: StreamingAgenticChatOptions,
+): Promise<AgenticChatResult> {
+  return runSDKChat(options, true);
+}
+
+async function runSDKChat(
+  options: StreamingAgenticChatOptions,
+  streaming: boolean,
+): Promise<AgenticChatResult> {
   const {
+    provider,
     messages,
-    tools,
     luaTools,
-    chatFunction,
+    permissions,
     onToolCall,
     maxIterations = MAX_TOOL_ITERATIONS,
-    permissions,
   } = options;
-
-  const workingMessages = [...messages];
-  let toolCallsText = "";
-  let iterations = 0;
-  let totalUsage: Usage | undefined;
-  let activeTools: Tool[] | undefined = tools;
-
-  // If no tools available, just call once and return
-  if (tools.length === 0) {
-    const response = await chatFunction(workingMessages);
+  if (!provider.languageModel) {
+    // The local mock provider is used by SilverBullet's development fixtures.
+    const response = streaming
+      ? await provider.streamChat({ ...options, onComplete: undefined })
+      : await provider.chat(messages);
     return {
-      messages: workingMessages,
-      finalResponse: response.content || "",
+      messages,
+      finalResponse: response.content ?? "",
       finalReasoning: response.reasoning,
       toolCallsText: "",
       usage: response.usage,
     };
   }
-
-  // Tool loop: keep calling until no more tool_calls
-  while (iterations < maxIterations) {
-    iterations++;
-
-    let response: ChatResponse;
-    try {
-      response = await chatFunction(workingMessages, activeTools);
-    } catch (error) {
-      if (!isNoToolSupportError(error) || !activeTools?.length) throw error;
-      await handleNoToolSupport();
-      activeTools = undefined;
-      continue;
-    }
-    totalUsage = aggregateUsage(totalUsage, response.usage);
-
-    if (response.tool_calls && response.tool_calls.length > 0) {
-      workingMessages.push({
-        role: "assistant",
-        content: response.content || "",
-        tool_calls: response.tool_calls,
-      });
-
-      const { toolCallsText: newText, toolMessages, attachmentMessages } =
-        await processToolCalls(
-          response.tool_calls,
-          luaTools,
-          onToolCall,
-          permissions,
-        );
-      toolCallsText += newText;
-      workingMessages.push(...toolMessages, ...attachmentMessages);
-    } else {
-      // No tool calls - we have the final response
-      return {
-        messages: workingMessages,
-        finalResponse: response.content || "",
-        finalReasoning: response.reasoning,
-        toolCallsText,
-        usage: totalUsage,
-      };
-    }
-  }
-
-  // Hit max iterations
-  return {
-    messages: workingMessages,
-    finalResponse:
-      "\n\n⚠️ Maximum tool iterations reached. Response may be incomplete.",
-    toolCallsText,
-    usage: totalUsage,
-  };
-}
-
-/**
- * Options for running a streaming agentic chat with tool support
- */
-export type StreamingAgenticChatOptions = {
-  messages: ChatMessage[];
-  tools: Tool[];
-  luaTools: Map<string, LuaToolDefinition>;
-  streamFunction: (options: StreamChatOptions) => Promise<ChatResponse>;
-  onChunk?: (chunk: string) => void;
-  onReasoningChunk?: (chunk: string) => void;
-  onToolCall?: (
-    toolName: string,
-    args: Record<string, unknown>,
-    result: ToolExecutionResult,
-  ) => void;
-  maxIterations?: number;
-  permissions?: PathPermissions;
-};
-
-/**
- * Runs a streaming agentic chat loop that streams content and executes tool calls.
- * Content is streamed via onChunk callback.
- * When tool calls are detected, they are executed and the loop continues.
- */
-export async function runStreamingAgenticChat(
-  options: StreamingAgenticChatOptions,
-): Promise<AgenticChatResult> {
-  const {
-    messages,
-    tools,
-    luaTools,
-    streamFunction,
-    onChunk,
-    onReasoningChunk,
-    onToolCall,
-    maxIterations = MAX_TOOL_ITERATIONS,
-    permissions,
-  } = options;
-
-  const workingMessages = [...messages];
   let toolCallsText = "";
-  let iterations = 0;
-  let fullResponse = "";
-  let fullReasoning = "";
-  let totalUsage: Usage | undefined;
-  let activeTools = tools;
-  const collectReasoning = (chunk: string) => {
-    fullReasoning += chunk;
-    if (onReasoningChunk) onReasoningChunk(chunk);
-  };
-
-  // If no tools available, just stream once and return
-  if (tools.length === 0) {
-    const result = await streamFunction({
-      messages: workingMessages,
-      tools: [],
-      onChunk,
-      onReasoningChunk: collectReasoning,
-    });
-    return {
-      messages: workingMessages,
-      finalResponse: result.content || "",
-      finalReasoning: fullReasoning || undefined,
-      toolCallsText: "",
-      usage: result.usage,
+  let pendingAttachments: ChatMessage[] = [];
+  const workingMessages = [...messages];
+  const sdkTools = toSDKTools(options.tools);
+  let executedTools = false;
+  for (const [name, definition] of Object.entries(sdkTools)) {
+    definition.execute = async (input, { toolCallId }) => {
+      executedTools = true;
+      const processed = await processToolCalls(
+        [
+          {
+            id: toolCallId,
+            function: { name, arguments: JSON.stringify(input) },
+          },
+        ],
+        luaTools,
+        onToolCall,
+        permissions,
+      );
+      toolCallsText += processed.toolCallsText;
+      pendingAttachments.push(...processed.attachmentMessages);
+      return processed.toolMessages[0]?.content ?? "";
     };
   }
-
-  while (iterations < maxIterations) {
-    iterations++;
-
-    let result: ChatResponse;
-    try {
-      result = await streamFunction({
-        messages: workingMessages,
-        tools: activeTools,
-        onChunk,
-        onReasoningChunk: collectReasoning,
-      });
-    } catch (error) {
-      if (!isNoToolSupportError(error) || activeTools.length === 0) throw error;
-      await handleNoToolSupport();
-      activeTools = [];
-      continue;
-    }
-    totalUsage = aggregateUsage(totalUsage, result.usage);
-
-    if (result.tool_calls && result.tool_calls.length > 0) {
+  const settings = {
+    model: provider.languageModel,
+    messages: toModelMessages(messages),
+    tools: sdkTools,
+    providerOptions: provider.providerOptions,
+    maxRetries: 0,
+    allowSystemInMessages: true,
+    stopWhen: isStepCount(maxIterations),
+    // Serial execution preserves note edit order and approval dialogue order.
+    toolCallConcurrency: 1,
+    prepareStep: ({ messages: sdkMessages }: { messages: ModelMessage[] }) => {
+      const attachments = pendingAttachments;
+      pendingAttachments = [];
+      return { messages: [...sdkMessages, ...toModelMessages(attachments)] };
+    },
+    onStepEnd: (step: StepResult<ToolSet>) => {
+      if (!step.toolCalls.length) return;
       workingMessages.push({
         role: "assistant",
-        content: result.content || "",
-        tool_calls: result.tool_calls,
+        content: step.text,
+        tool_calls: step.toolCalls.map((call) => ({
+          id: call.toolCallId,
+          type: "function",
+          function: {
+            name: call.toolName,
+            arguments: JSON.stringify(call.input),
+          },
+          providerOptions: call.providerMetadata,
+        })),
       });
-
-      const { toolCallsText: newText, toolMessages, attachmentMessages } =
-        await processToolCalls(
-          result.tool_calls,
-          luaTools,
-          onToolCall,
-          permissions,
-        );
-      toolCallsText += newText;
-      workingMessages.push(...toolMessages, ...attachmentMessages);
-
-      fullResponse = result.content || "";
-    } else {
-      // No tool calls - we have the final response (already streamed)
-      return {
-        messages: workingMessages,
-        finalResponse: result.content || "",
-        finalReasoning: fullReasoning || undefined,
-        toolCallsText,
-        usage: totalUsage,
-      };
-    }
-  }
-
-  // Hit max iterations
-  return {
-    messages: workingMessages,
-    finalResponse:
-      fullResponse +
-      "\n\n⚠️ Maximum tool iterations reached. Response may be incomplete.",
-    finalReasoning: fullReasoning || undefined,
-    toolCallsText,
-    usage: totalUsage,
+      workingMessages.push(
+        ...step.toolResults.map((result) => ({
+          role: "tool" as const,
+          name: result.toolName,
+          tool_call_id: result.toolCallId,
+          content:
+            typeof result.output === "string"
+              ? result.output
+              : JSON.stringify(result.output),
+        })),
+      );
+      workingMessages.push(...pendingAttachments);
+    },
   };
+  const execute = async (tools: ToolSet): Promise<AgenticChatResult> => {
+    let text: string;
+    let reasoning: string | undefined;
+    let usage;
+    let finishReason;
+    if (streaming) {
+      const result = streamText({ ...settings, tools });
+      let fullReasoning = "";
+      for await (const part of result.fullStream) {
+        if (part.type === "text-delta") options.onChunk?.(part.text);
+        else if (part.type === "reasoning-delta") {
+          fullReasoning += part.text;
+          options.onReasoningChunk?.(part.text);
+        } else if (part.type === "error") throw part.error;
+      }
+      text = await result.text;
+      reasoning = fullReasoning || undefined;
+      usage = await result.totalUsage;
+      finishReason = await result.finishReason;
+    } else {
+      const result = await generateText({ ...settings, tools });
+      text = result.text;
+      reasoning = result.reasoningText;
+      usage = result.totalUsage;
+      finishReason = result.finishReason;
+    }
+    if (finishReason === "tool-calls") {
+      const warning =
+        "\n\n⚠️ Maximum tool iterations reached. Response may be incomplete.";
+      text += warning;
+      if (streaming) options.onChunk?.(warning);
+    }
+    return {
+      messages: workingMessages,
+      finalResponse: text,
+      finalReasoning: reasoning,
+      toolCallsText,
+      usage: toUsage(usage),
+    };
+  };
+  try {
+    return await execute(sdkTools);
+  } catch (error) {
+    // Retry only before tools have run, so a failed request cannot repeat edits.
+    if (
+      executedTools ||
+      !options.tools.length ||
+      !(error instanceof Error) ||
+      !/does not support tools/i.test(error.message)
+    )
+      throw error;
+    if (currentModel) currentModel.supportsTools = false;
+    await editor.flashNotification(
+      `Model ${provider.modelName} does not support tools, continuing without them`,
+      "info",
+    );
+    return execute({});
+  }
 }

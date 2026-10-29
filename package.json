@@ -11,8 +11,14 @@
     "update-readme": "bun scripts/update-readme.ts"
   },
   "dependencies": {
+    "@ai-sdk/google": "^4.0.107",
+    "@ai-sdk/mcp": "^2.0.86",
+    "@ai-sdk/mistral": "^4.0.74",
+    "@ai-sdk/openai": "^4.0.104",
+    "@ai-sdk/openai-compatible": "^3.0.80",
+    "@cfworker/json-schema": "^4.1.1",
     "@silverbulletmd/silverbullet": ">=2.11.0",
-    "sse.js": "^2.8.0"
+    "ai": "^7.0.156"
   },
   "devDependencies": {
     "@lezer/markdown": "1.6.3",

@@ -1,8 +1,5 @@
+import { ModelCatalog, providerDefaults } from "./providers/catalog.ts";
 import { clientStore, editor } from "@silverbulletmd/silverbullet/syscalls";
-import { OpenAIProvider } from "./providers/openai.ts";
-import { MistralProvider } from "./providers/mistral.ts";
-import { GeminiProvider } from "./providers/gemini.ts";
-import { OllamaProvider } from "./providers/ollama.ts";
 import type { ProviderConfig, ProvidersConfig } from "./types.ts";
 import { aiSettings, getProviderDefaults, initializeOpenAI } from "./init.ts";
 import {
@@ -73,19 +70,16 @@ function createProviderForDiscovery(
   const baseUrl = config.baseUrl || defaults.baseUrl;
   const useProxy = config.useProxy ?? defaults.useProxy;
 
-  switch (providerType.toLowerCase()) {
-    case "openai":
-      return new OpenAIProvider(apiKey, "", baseUrl, !!apiKey, useProxy);
-    case "gemini":
-      if (!apiKey) return null;
-      return new GeminiProvider(apiKey, "", useProxy);
-    case "ollama":
-      return new OllamaProvider(apiKey, "", baseUrl, !!apiKey, useProxy);
-    case "mistral":
-      return new MistralProvider(apiKey, "", baseUrl, !!apiKey, useProxy);
-    default:
-      return null;
-  }
+  if (!providerDefaults[providerType.toLowerCase()]) return null;
+  if (providerType === "gemini" && !apiKey) return null;
+  return new ModelCatalog({
+    provider: providerType.toLowerCase(),
+    apiKey,
+    baseUrl,
+    requireAuth: !!apiKey,
+    useProxy,
+    timeout: config.timeout ?? defaults.timeout,
+  });
 }
 
 async function getCache(providerName: string): Promise<CachedModelList | null> {

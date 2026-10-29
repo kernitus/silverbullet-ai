@@ -1,8 +1,25 @@
+import type { LanguageModel } from "ai";
+import type { ProviderOptions } from "../types.ts";
 import { editor } from "@silverbulletmd/silverbullet/syscalls";
-import { getLineAfter, getLineBefore, getLineOfPos, getPageLength } from "../editorUtils.ts";
-import type { ChatMessage, ChatResponse, PostProcessorData, StreamChatOptions, Tool } from "../types.ts";
-import { assembleMessagesWithAttachments, enrichChatMessages, invokeSpaceLuaFunction, log } from "../utils.ts";
-import { proxiedFetch } from "../proxy.ts";
+import {
+  getLineAfter,
+  getLineBefore,
+  getLineOfPos,
+  getPageLength,
+} from "../editorUtils.ts";
+import type {
+  ChatMessage,
+  ChatResponse,
+  PostProcessorData,
+  StreamChatOptions,
+  Tool,
+} from "../types.ts";
+import {
+  assembleMessagesWithAttachments,
+  enrichChatMessages,
+  invokeSpaceLuaFunction,
+  log,
+} from "../utils.ts";
 import { formatReasoningBlock } from "../widgets.ts";
 import { aiSettings } from "../init.ts";
 
@@ -15,6 +32,8 @@ export type ProviderDefaults = {
 };
 
 export interface ProviderInterface {
+  languageModel?: LanguageModel;
+  providerOptions?: ProviderOptions;
   name: string;
   apiKey: string;
   baseUrl: string;
@@ -39,7 +58,10 @@ export interface ProviderInterface {
     cursorStart: number,
   ) => Promise<void>;
   getModelCapabilities: (modelName?: string) => Promise<string[] | null>;
-  supportsCapability: (capability: string, modelName?: string) => Promise<boolean>;
+  supportsCapability: (
+    capability: string,
+    modelName?: string,
+  ) => Promise<boolean>;
   getContextLimit: (modelName?: string) => Promise<number | null>;
 }
 
@@ -89,7 +111,10 @@ export abstract class AbstractProvider implements ProviderInterface {
    * Check if the model supports a specific capability (e.g., "tools", "vision").
    * Returns false if capabilities are unknown.
    */
-  async supportsCapability(capability: string, modelName?: string): Promise<boolean> {
+  async supportsCapability(
+    capability: string,
+    modelName?: string,
+  ): Promise<boolean> {
     const capabilities = await this.getModelCapabilities(modelName);
     return capabilities?.includes(capability) ?? false;
   }
@@ -102,17 +127,13 @@ export abstract class AbstractProvider implements ProviderInterface {
     return Promise.resolve(null);
   }
 
-  protected fetch(url: string, options: RequestInit): Promise<Response> {
-    return proxiedFetch(url, options, this.useProxy, this.timeout, this.name);
-  }
-
   async streamChatIntoEditor(
     options: StreamChatOptions,
     cursorStart: number,
   ): Promise<void> {
     const { onChunk, onComplete, postProcessors } = options;
     const loadingMessage = "🤔 Thinking … ";
-    let cursorPos = cursorStart ?? await getPageLength();
+    let cursorPos = cursorStart ?? (await getPageLength());
     await editor.insertAtPos(loadingMessage, cursorPos);
     let stillLoading = true;
     let fullResponse = "";
@@ -134,11 +155,7 @@ export abstract class AbstractProvider implements ProviderInterface {
           }
           const pos = cursorPos;
           insertQueue = insertQueue.then(() =>
-            editor.replaceRange(
-              pos,
-              pos + loadingMessage.length,
-              data,
-            )
+            editor.replaceRange(pos, pos + loadingMessage.length, data),
           );
           stillLoading = false;
         } else {
