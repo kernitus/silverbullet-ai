@@ -1,0 +1,1089 @@
+diff --git a/client/plugos/syscalls/space.ts b/client/plugos/syscalls/space.ts
+index 7fccfec..7d9942f 100644
+--- a/client/plugos/syscalls/space.ts
++++ b/client/plugos/syscalls/space.ts
+@@ -515,6 +515,17 @@ export function spaceWriteSyscalls(editor: Client): SysCallMapping {
+         "space.resolveGitConflict(id, generation, contentRevision, action)",
+       ],
+     },
++    "space.writePageIfUnchanged": {
++      callback: (
++        _ctx,
++        name: string,
++        text: string,
++        expectedHash: string | null,
++      ) => editor.space.writePageIfUnchanged(name, text, expectedHash),
++      description:
++        "Writes a page only when its local and server content still matches the expected SHA-256 revision; null requires a new page. Conflicts require a fresh read and approval.",
++      signatures: ["space.writePageIfUnchanged(name, text, expectedHash)"],
++    },
+     "space.writePage": {
+       callback: (_ctx, name: string, text: string): Promise<PageMeta> =>
+         editor.space.writePage(name, text),
+diff --git a/client/service_worker/proxy_router.ts b/client/service_worker/proxy_router.ts
+index b06e403..025a8b7 100644
+--- a/client/service_worker/proxy_router.ts
++++ b/client/service_worker/proxy_router.ts
+@@ -408,6 +408,9 @@ export class ProxyRouter extends EventEmitter<ProxyRouterEvents> {
+       case "HEAD": {
+         return path ? this.handleGet(path, request) : fetch(request);
+       }
++      case "PATCH": {
++        return this.handleConditionalPut(path, request);
++      }
+       case "PUT": {
+         return this.handlePut(path, request);
+       }
+@@ -489,7 +492,49 @@ export class ProxyRouter extends EventEmitter<ProxyRouterEvents> {
+     }
+   }
+ 
++  async handleConditionalPut(
++    path: string,
++    request: Request,
++  ): Promise<Response> {
++    if (!this.syncEngine || !this.online)
++      return new Response("Conditional writes require an online sync engine", {
++        status: 503,
++      });
++    const expected = request.headers.get("X-SilverBullet-Expected-Hash");
++    if (
++      !path ||
++      (expected !== "absent" && !/^[a-f0-9]{64}$/.test(expected ?? ""))
++    ) {
++      return new Response("Expected a SHA-256 revision or absent", {
++        status: 400,
++      });
++    }
++    try {
++      const result = await this.syncEngine.writeFileConditional(
++        path,
++        new Uint8Array(await request.arrayBuffer()),
++        expected === "absent" ? null : expected!,
++        request.signal,
++      );
++      return Response.json(result, {
++        headers: { "X-SilverBullet-Conditional-Writes": "1" },
++      });
++    } catch (error) {
++      return new Response(String(error), { status: 503 });
++    }
++  }
++
+   async handlePut(path: string, request: Request): Promise<Response> {
++    if (!this.syncEngine) throw new Error("Sync has not started");
++    return this.syncEngine.withFileLock(path, () =>
++      this.handlePutUnlocked(path, request),
++    );
++  }
++
++  private async handlePutUnlocked(
++    path: string,
++    request: Request,
++  ): Promise<Response> {
+     if (!this.syncEngine || !this.localSpacePrimitives) {
+       throw new Error("This should not happen");
+     }
+@@ -524,6 +569,16 @@ export class ProxyRouter extends EventEmitter<ProxyRouterEvents> {
+   }
+ 
+   async handleDelete(path: string, request: Request): Promise<Response> {
++    if (!this.syncEngine) throw new Error("Sync has not started");
++    return this.syncEngine.withFileLock(path, () =>
++      this.handleDeleteUnlocked(path, request),
++    );
++  }
++
++  private async handleDeleteUnlocked(
++    path: string,
++    request: Request,
++  ): Promise<Response> {
+     if (!this.syncEngine || !this.localSpacePrimitives) {
+       throw new Error("This should not happen");
+     }
+diff --git a/client/service_worker/sync_engine.ts b/client/service_worker/sync_engine.ts
+index 9e544d0..85c04d3 100644
+--- a/client/service_worker/sync_engine.ts
++++ b/client/service_worker/sync_engine.ts
+@@ -1,3 +1,8 @@
++import { withSpaceFileLock, requireFileLocks } from "../spaces/file_lock.ts";
++import {
++  commitConditionalWrite,
++  recoverConditionalWrite,
++} from "../spaces/conditional_write.ts";
+ import { jitter } from "@silverbulletmd/silverbullet/lib/async";
+ import { compile as gitIgnoreCompiler } from "gitignore-parser";
+ import type { KvPrimitives } from "../data/kv_primitives.ts";
+@@ -86,6 +91,47 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
+     super();
+   }
+ 
++  withFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
++    return withSpaceFileLock(this.remote.url, path, operation);
++  }
++
++  async writeFileConditional(
++    path: string,
++    data: Uint8Array,
++    expectedHash: string | null,
++    signal?: AbortSignal,
++  ) {
++    requireFileLocks();
++    await this.remote.assertConditionalWrites();
++    if (!this.snapshot || !this.baseStore)
++      throw new Error("Sync has not started");
++    if (!this.isSyncCandidate(path))
++      throw new Error("Conditional writes require a synchronised file");
++    return this.withFileLock(path, () =>
++      commitConditionalWrite({
++        path,
++        data,
++        expectedHash,
++        signal,
++        local: this.local,
++        remote: this.remote,
++        kv: this.kv,
++        allowUncached: !this.snapshot.files.has(path),
++        recordSynced: async (meta, hash, remoteMeta) => {
++          await this.baseStore.putBase(data);
++          this.snapshot.files.set(path, [
++            meta.lastModified,
++            remoteMeta.lastModified,
++          ]);
++          this.snapshot.remoteHashes.set(path, hash);
++          this.snapshot.baseHashes.set(path, hash);
++          this.snapshot.nonSyncedFiles.delete(path);
++          await this.saveSnapshot(this.snapshot);
++        },
++      }),
++    );
++  }
++
+   listSafety(): Promise<{ hash: string; size: number; ts: number }[]> {
+     return this.baseStore.listSafety();
+   }
+@@ -158,6 +204,29 @@ export class SyncEngine extends EventEmitter<SyncEngineEvents> {
+       conflictResolver: this.stdLibAwareConflictResolver.bind(this),
+       isSyncCandidate: this.isSyncCandidate.bind(this),
+       baseStore: this.baseStore,
++      withFileLock: (path, operation) =>
++        this.withFileLock(path, async () => {
++          const recovered = await recoverConditionalWrite({
++            path,
++            local: this.local,
++            remote: this.remote,
++            kv: this.kv,
++            recordSynced: async (meta, hash, remoteMeta, data) => {
++              await this.baseStore.putBase(data);
++              this.snapshot.files.set(path, [
++                meta.lastModified,
++                remoteMeta.lastModified,
++              ]);
++              this.snapshot.remoteHashes.set(path, hash);
++              this.snapshot.baseHashes.set(path, hash);
++              this.snapshot.nonSyncedFiles.delete(path);
++              await this.saveSnapshot(this.snapshot);
++            },
++          });
++          if (recovered?.status === "unknown")
++            throw new Error(recovered.reason);
++          return operation();
++        }),
+       onScheduleResync: (path) => this.queue.mark(path, { type: "any" }),
+     });
+ 
+diff --git a/client/space.ts b/client/space.ts
+index 7d4709d..cda30d0 100644
+--- a/client/space.ts
++++ b/client/space.ts
+@@ -182,6 +182,27 @@ export class Space {
+     return { text: "", offset: 0 };
+   }
+ 
++  async writePageIfUnchanged(
++    name: string,
++    text: string,
++    expectedHash: string | null,
++  ) {
++    if (!this.spacePrimitives.writeFileChecked)
++      throw new Error(
++        "Conditional writes require an updated SilverBullet host",
++      );
++    try {
++      this.saving = true;
++      return await this.spacePrimitives.writeFileChecked(
++        `${name}.md`,
++        new TextEncoder().encode(text),
++        expectedHash,
++      );
++    } finally {
++      this.saving = false;
++    }
++  }
++
+   async writePage(name: string, text: string): Promise<PageMeta> {
+     try {
+       this.saving = true;
+diff --git a/client/spaces/checked_space_primitives.ts b/client/spaces/checked_space_primitives.ts
+index 08b1b78..e85b914 100644
+--- a/client/spaces/checked_space_primitives.ts
++++ b/client/spaces/checked_space_primitives.ts
+@@ -48,6 +48,20 @@ export class CheckedSpacePrimitives implements SpacePrimitives {
+     return this.wrapped.writeFile(path, data, meta);
+   }
+ 
++  async writeFileChecked(
++    path: string,
++    data: Uint8Array,
++    expectedHash: string | null,
++  ) {
++    if (!(await this.isWritable(path)))
++      throw new Error("Couldn't write file, path is not writable");
++    if (!this.wrapped.writeFileChecked)
++      throw new Error(
++        "Conditional writes are unsupported by this storage backend",
++      );
++    return this.wrapped.writeFileChecked(path, data, expectedHash);
++  }
++
+   async deleteFile(path: string): Promise<void> {
+     // We allow deletion of paths we can't write to. This is for the case when
+     // the user has an invalidly named file in their space and they need to
+diff --git a/client/spaces/evented_space_primitives.ts b/client/spaces/evented_space_primitives.ts
+index e62b61f..25c3eb8 100644
+--- a/client/spaces/evented_space_primitives.ts
++++ b/client/spaces/evented_space_primitives.ts
+@@ -211,6 +211,47 @@ export class EventedSpacePrimitives implements SpacePrimitives {
+     }
+   }
+ 
++  async writeFileChecked(
++    path: string,
++    data: Uint8Array,
++    expectedHash: string | null,
++  ) {
++    if (!this.wrapped.writeFileChecked)
++      throw new Error(
++        "Conditional writes are unsupported by this storage backend",
++      );
++    if (!this.enabled)
++      return this.wrapped.writeFileChecked(path, data, expectedHash);
++    this.operationCount++;
++    const created = this.spaceSnapshot[path] === undefined;
++    try {
++      const result = await this.wrapped.writeFileChecked(
++        path,
++        data,
++        expectedHash,
++      );
++      if (result.status === "applied") {
++        if (this.operationCount === 1)
++          await this.triggerEventsAndCache(
++            path,
++            result.meta.lastModified,
++            true,
++          );
++        if (path.endsWith(".md"))
++          await this.dispatchEvent(
++            "page:saved",
++            path.slice(0, -3),
++            result.meta,
++            created,
++          );
++      }
++      return result;
++    } finally {
++      this.operationCount--;
++      this.checkDeferredFetchFileList();
++    }
++  }
++
+   async writeFile(
+     path: string,
+     data: Uint8Array,
+diff --git a/client/spaces/http_space_primitives.ts b/client/spaces/http_space_primitives.ts
+index 27508b6..8562a5b 100644
+--- a/client/spaces/http_space_primitives.ts
++++ b/client/spaces/http_space_primitives.ts
+@@ -1,3 +1,4 @@
++import type { ConditionalWriteResult } from "./conditional_write.ts";
+ import {
+   isNetworkError,
+   notFoundError,
+@@ -283,6 +284,55 @@ export class HttpSpacePrimitives implements SpacePrimitives {
+     };
+   }
+ 
++  private conditionalWritesVerified = false;
++
++  async assertConditionalWrites(): Promise<void> {
++    if (this.conditionalWritesVerified) return;
++    const response = await this.authenticatedFetch(this.url, {
++      method: "HEAD",
++    });
++    if (
++      !response.ok ||
++      response.headers.get("X-SilverBullet-Conditional-Writes") !== "1"
++    ) {
++      throw new Error(
++        "The server does not advertise conditional-write support; upgrade the server before editing",
++      );
++    }
++    this.conditionalWritesVerified = true;
++  }
++
++  async writeFileChecked(
++    path: string,
++    data: Uint8Array,
++    expectedHash: string | null,
++  ): Promise<ConditionalWriteResult> {
++    // PATCH is handled only by the patched service worker. An older worker
++    // forwards it to the server, which rejects this method without writing.
++    const response = await this.authenticatedFetch(
++      `${this.url}/${encodePageURI(path)}`,
++      {
++        method: "PATCH",
++        headers: {
++          ...this.clientHeaders(),
++          "Content-Type": "application/octet-stream",
++          "X-SilverBullet-Expected-Hash": expectedHash ?? "absent",
++        },
++        body: data as any,
++      },
++      0,
++    );
++    if (
++      !response.ok ||
++      response.headers.get("X-SilverBullet-Conditional-Writes") !== "1"
++    ) {
++      throw new Error(
++        "Conditional write was not confirmed; the patched server and service worker are required. Do not retry automatically",
++      );
++    }
++    return response.json();
++  }
++
+   async writeFile(
+     path: string,
+     data: Uint8Array,
+diff --git a/client/spaces/space_primitives.ts b/client/spaces/space_primitives.ts
+index 0b0d3c4..125dfa5 100644
+--- a/client/spaces/space_primitives.ts
++++ b/client/spaces/space_primitives.ts
+@@ -1,3 +1,4 @@
++import type { ConditionalWriteResult } from "./conditional_write.ts";
+ import type { FileMeta } from "../../plug-api/types/index.ts";
+ 
+ /**
+@@ -26,5 +27,11 @@ export type SpacePrimitives = {
+     meta?: FileMeta,
+   ): Promise<FileMeta>;
+ 
++  writeFileChecked?(
++    path: string,
++    data: Uint8Array,
++    expectedHash: string | null,
++  ): Promise<ConditionalWriteResult>;
++
+   deleteFile(path: string): Promise<void>;
+ };
+diff --git a/client/spaces/sync.test.ts b/client/spaces/sync.test.ts
+index ea6d370..5a1ccbc 100644
+--- a/client/spaces/sync.test.ts
++++ b/client/spaces/sync.test.ts
+@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
+ import { sleep } from "@silverbulletmd/silverbullet/lib/async";
+ import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
+ import type { FileMeta } from "@silverbulletmd/silverbullet/type/index";
+-import { describe, expect, test } from "vitest";
++import { describe, expect, test, vi } from "vitest";
+ import { MemoryKvPrimitives } from "../data/memory_kv_primitives.ts";
+ import { BaseStore } from "./base_store.ts";
+ import { DataStoreSpacePrimitives } from "./datastore_space_primitives.ts";
+@@ -2715,3 +2715,57 @@ describe("base tracking keeps pace with pulled content", () => {
+     expect(req.baseText).toBe(withB1);
+   });
+ });
++
++describe("locked sync metadata", () => {
++  test("an unchanged full cycle does not fetch remote metadata per note", async () => {
++    const primary = new DataStoreSpacePrimitives(new MemoryKvPrimitives());
++    const secondary = new DataStoreSpacePrimitives(new MemoryKvPrimitives());
++    const snapshot = new SyncSnapshot();
++    for (let i = 0; i < 1000; i++) {
++      const path = `${i}.md`;
++      const meta = await primary.writeFile(path, encode("unchanged"));
++      await secondary.writeFile(path, encode("unchanged"), meta);
++      snapshot.files.set(path, [meta.lastModified, meta.lastModified]);
++    }
++    const getRemoteMeta = vi.spyOn(secondary, "getFileMeta");
++    const sync = new SpaceSync(primary, secondary, {
++      isSyncCandidate: () => true,
++      conflictResolver: async () => {
++        throw new Error("Unexpected conflict");
++      },
++      withFileLock: async (_path, operation) => operation(),
++    });
++    expect(await sync.syncFiles(snapshot)).toBe(0);
++    expect(getRemoteMeta).not.toHaveBeenCalled();
++  });
++
++  test("a commit while waiting for the lock invalidates the remote listing", async () => {
++    const primary = new DataStoreSpacePrimitives(new MemoryKvPrimitives());
++    const secondary = new DataStoreSpacePrimitives(new MemoryKvPrimitives());
++    const snapshot = new SyncSnapshot();
++    const meta = await primary.writeFile("note.md", encode("original"));
++    await secondary.writeFile("note.md", encode("original"), meta);
++    snapshot.files.set("note.md", [meta.lastModified, meta.lastModified]);
++    const getRemoteMeta = vi.spyOn(secondary, "getFileMeta");
++    const sync = new SpaceSync(primary, secondary, {
++      isSyncCandidate: () => true,
++      conflictResolver: async () => {
++        throw new Error("Unexpected conflict");
++      },
++      withFileLock: async (path, operation) => {
++        const committedMeta = { ...meta, lastModified: meta.lastModified + 1 };
++        await primary.writeFile(path, encode("approved"), committedMeta);
++        await secondary.writeFile(path, encode("approved"), committedMeta);
++        snapshot.files.set(path, [
++          committedMeta.lastModified,
++          committedMeta.lastModified,
++        ]);
++        getRemoteMeta.mockClear();
++        return operation();
++      },
++    });
++    expect(await sync.syncFiles(snapshot)).toBe(0);
++    expect(getRemoteMeta).toHaveBeenCalledTimes(1);
++    expect(decode((await primary.readFile("note.md")).data)).toBe("approved");
++  });
++});
+diff --git a/client/spaces/sync.ts b/client/spaces/sync.ts
+index 01c887e..ec6aade 100644
+--- a/client/spaces/sync.ts
++++ b/client/spaces/sync.ts
+@@ -288,6 +288,7 @@ export type SyncOptions = {
+   isSyncCandidate: (path: string) => boolean;
+   baseStore?: BaseStore;
+   onScheduleResync?: (path: string) => void;
++  withFileLock?: <T>(path: string, operation: () => Promise<T>) => Promise<T>;
+ };
+ 
+ export type SyncEvents = {
+@@ -336,6 +337,7 @@ export class SpaceSync extends EventEmitter<SyncEvents> {
+     const startTime = Date.now();
+ 
+     try {
++      const observedSyncState = new Map(snapshot.files);
+       const primaryAllPages = await this.primary.fetchFileList();
+       const secondaryAllPages = await this.secondary.fetchFileList();
+ 
+@@ -376,6 +378,7 @@ export class SpaceSync extends EventEmitter<SyncEvents> {
+             !nonSyncCandidates.has(path),
+             snapshot,
+             { type: "unknown" },
++            observedSyncState.get(path),
+           );
+           operations = operations + fileOperations;
+           filesProcessed++;
+@@ -440,6 +443,7 @@ export class SpaceSync extends EventEmitter<SyncEvents> {
+     let operations = 0;
+ 
+     try {
++      const observedSyncState = snapshot.files.get(path);
+       let primaryMeta: FileMeta | undefined;
+       try {
+         primaryMeta = await this.primary.getFileMeta(path);
+@@ -467,6 +471,7 @@ export class SpaceSync extends EventEmitter<SyncEvents> {
+         true,
+         snapshot,
+         signal,
++        observedSyncState,
+       );
+     } finally {
+       this.isSyncing = false;
+@@ -495,6 +500,55 @@ export class SpaceSync extends EventEmitter<SyncEvents> {
+     syncBack: boolean,
+     snapshot: SyncSnapshot,
+     signal: SyncSignal,
++    observedSyncState: SyncStatusItem | undefined,
++  ): Promise<number> {
++    if (!this.options.withFileLock) {
++      return this.syncFileUnlocked(
++        path,
++        primaryMeta,
++        secondaryMeta,
++        syncBack,
++        snapshot,
++        signal,
++      );
++    }
++    return this.options.withFileLock(path, async () => {
++      // Listings and earlier metadata reads may predate a queued local edit.
++      const readMeta = async (space: SpacePrimitives) => {
++        try {
++          return await space.getFileMeta(path);
++        } catch (error) {
++          if (error instanceof Error && error.message === notFoundError.message)
++            return undefined;
++          throw error;
++        }
++      };
++      const currentPrimary = await readMeta(this.primary);
++      // A conditional commit or recovery may have changed the common revision
++      // after the listing. Unchanged entries can reuse the remote listing;
++      // ordinary remote races remain protected by server preconditions.
++      const currentSecondary =
++        snapshot.files.get(path) !== observedSyncState
++          ? await readMeta(this.secondary)
++          : secondaryMeta;
++      return this.syncFileUnlocked(
++        path,
++        currentPrimary,
++        currentSecondary,
++        syncBack,
++        snapshot,
++        signal,
++      );
++    });
++  }
++
++  private async syncFileUnlocked(
++    path: string,
++    primaryMeta: FileMeta | undefined,
++    secondaryMeta: FileMeta | undefined,
++    syncBack: boolean,
++    snapshot: SyncSnapshot,
++    signal: SyncSignal,
+   ): Promise<number> {
+     let operations = 0;
+ 
+diff --git a/server/src/handlers/fs.rs b/server/src/handlers/fs.rs
+index 501a101..3ebf966 100644
+--- a/server/src/handlers/fs.rs
++++ b/server/src/handlers/fs.rs
+@@ -84,6 +84,7 @@ pub async fn handle_fs_list(State(state): State<Arc<ServerState>>) -> impl IntoR
+             Response::builder()
+                 .status(StatusCode::OK)
+                 .header("Content-Type", "application/json")
++                .header("X-SilverBullet-Conditional-Writes", "1")
+                 .header("X-Space-Path", &state.space_folder_path)
+                 .header("Cache-Control", "no-cache")
+                 .body(Body::from(json))
+diff --git a/client/spaces/conditional_write.ts b/client/spaces/conditional_write.ts
+new file mode 100644
+index 0000000..d427853
+--- /dev/null
++++ b/client/spaces/conditional_write.ts
+@@ -0,0 +1,201 @@
++import { notFoundError } from "@silverbulletmd/silverbullet/constants";
++import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
++import type { FileMeta } from "@silverbulletmd/silverbullet/type/index";
++import type { KvPrimitives } from "../data/kv_primitives.ts";
++import {
++  PreconditionFailedError,
++  type HttpSpacePrimitives,
++} from "./http_space_primitives.ts";
++import type { SpacePrimitives } from "./space_primitives.ts";
++
++export type ConditionalWriteResult =
++  | { status: "applied"; meta: FileMeta; hash: string }
++  | { status: "conflict"; reason: string }
++  | { status: "unknown"; reason: string };
++
++export const conditionalWriteKey = (path: string) => [
++  "$conditionalWrite",
++  path,
++];
++
++export type ConditionalWriteIntent = {
++  expectedHash: string | null;
++  localHash: string | null;
++  proposedHash: string;
++};
++
++/**
++ * Call under the same host file lock used by local writes, deletions and sync.
++ * A durable intent prevents sync from replaying a proposal after a lost response
++ * or worker termination. Recovery must inspect remote state, never resend it.
++ */
++export async function commitConditionalWrite(options: {
++  path: string;
++  data: Uint8Array;
++  expectedHash: string | null;
++  local: SpacePrimitives;
++  remote: Pick<HttpSpacePrimitives, "writeFileConditional">;
++  kv: KvPrimitives;
++  signal?: AbortSignal;
++  allowUncached?: boolean;
++  recordSynced: (
++    meta: FileMeta,
++    hash: string,
++    remoteMeta: FileMeta,
++  ) => Promise<void>;
++}): Promise<ConditionalWriteResult> {
++  const { path, data, expectedHash, local, remote, kv, signal } = options;
++  if (expectedHash !== null && !/^[a-f0-9]{64}$/.test(expectedHash)) {
++    throw new Error("Expected a SHA-256 revision or null for creation");
++  }
++  signal?.throwIfAborted();
++  const [pending] = await kv.batchGet([conditionalWriteKey(path)]);
++  if (pending) {
++    return {
++      status: "unknown",
++      reason: "A previous conditional write needs recovery",
++    };
++  }
++  let current: Awaited<ReturnType<SpacePrimitives["readFile"]>> | undefined;
++  try {
++    current = await local.readFile(path);
++  } catch (error) {
++    if (!(error instanceof Error) || error.message !== notFoundError.message)
++      throw error;
++  }
++  // The caller may allow a cache miss only when sync has no previous local
++  // entry. Otherwise absence represents a local deletion and must conflict.
++  if (!current && expectedHash !== null && !options.allowUncached) {
++    return {
++      status: "conflict",
++      reason: "The local note was deleted after it was read",
++    };
++  }
++  if (
++    current &&
++    (expectedHash === null || (await hashSHA256(current.data)) !== expectedHash)
++  ) {
++    return {
++      status: "conflict",
++      reason: "The local note changed after it was read",
++    };
++  }
++  const proposedHash = await hashSHA256(data);
++  signal?.throwIfAborted();
++  await kv.batchSet([
++    {
++      key: conditionalWriteKey(path),
++      value: {
++        expectedHash,
++        localHash: current ? expectedHash : null,
++        proposedHash,
++      } satisfies ConditionalWriteIntent,
++    },
++  ]);
++  // Cancellation before sending is known not to have committed anything.
++  if (signal?.aborted) {
++    await kv.batchDelete([conditionalWriteKey(path)]);
++    signal.throwIfAborted();
++  }
++  let committed: Awaited<
++    ReturnType<HttpSpacePrimitives["writeFileConditional"]>
++  >;
++  try {
++    committed = await remote.writeFileConditional(
++      path,
++      data,
++      undefined,
++      expectedHash === null
++        ? { type: "notExists" }
++        : { type: "matchesHash", hash: expectedHash },
++    );
++  } catch (error) {
++    if (error instanceof PreconditionFailedError) {
++      await kv.batchDelete([conditionalWriteKey(path)]);
++      return {
++        status: "conflict",
++        reason: "The remote note changed after it was read",
++      };
++    }
++    return {
++      status: "unknown",
++      reason: "The server write outcome is unknown; do not retry the proposal",
++    };
++  }
++  try {
++    if (committed.remoteHash !== proposedHash) {
++      throw new Error("The server did not confirm the proposed revision");
++    }
++    const meta = await local.writeFile(path, data, committed.meta);
++    await options.recordSynced(meta, proposedHash, committed.meta);
++    await kv.batchDelete([conditionalWriteKey(path)]);
++    return { status: "applied", meta, hash: proposedHash };
++  } catch {
++    return {
++      status: "unknown",
++      reason: "The server committed the edit, but local recovery is required",
++    };
++  }
++}
++
++/** Read-only server recovery. A changed local copy is always preserved. */
++export async function recoverConditionalWrite(options: {
++  path: string;
++  local: SpacePrimitives;
++  remote: Pick<HttpSpacePrimitives, "readFileWithHash">;
++  kv: KvPrimitives;
++  recordSynced: (
++    meta: FileMeta,
++    hash: string,
++    remoteMeta: FileMeta,
++    data: Uint8Array,
++  ) => Promise<void>;
++}): Promise<ConditionalWriteResult | undefined> {
++  const { path, local, remote, kv } = options;
++  const [intent] = (await kv.batchGet([conditionalWriteKey(path)])) as [
++    ConditionalWriteIntent | undefined,
++  ];
++  if (!intent) return undefined;
++  let currentHash: string | null = null;
++  try {
++    currentHash = await hashSHA256((await local.readFile(path)).data);
++  } catch (error) {
++    if (!(error instanceof Error) || error.message !== notFoundError.message)
++      throw error;
++  }
++  if (currentHash !== intent.localHash && currentHash !== intent.proposedHash) {
++    return {
++      status: "unknown",
++      reason:
++        "Local content changed during the uncertain write; it has been preserved",
++    };
++  }
++  try {
++    const found = await remote.readFileWithHash(path);
++    if (
++      found.remoteHash !== intent.proposedHash ||
++      (await hashSHA256(found.data)) !== intent.proposedHash
++    ) {
++      return {
++        status: "unknown",
++        reason:
++          "The server no longer holds the proposed revision; manual recovery is required",
++      };
++    }
++    const meta = await local.writeFile(path, found.data, found.meta);
++    await options.recordSynced(
++      meta,
++      intent.proposedHash,
++      found.meta,
++      found.data,
++    );
++    await kv.batchDelete([conditionalWriteKey(path)]);
++    return { status: "applied", meta, hash: intent.proposedHash };
++  } catch {
++    return {
++      status: "unknown",
++      reason:
++        "Could not verify and save the server revision; the proposal has not been retried",
++    };
++  }
++}
+diff --git a/client/spaces/conditional_write.test.ts b/client/spaces/conditional_write.test.ts
+new file mode 100644
+index 0000000..f982055
+--- /dev/null
++++ b/client/spaces/conditional_write.test.ts
+@@ -0,0 +1,275 @@
++import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
++import { describe, expect, test, vi } from "vitest";
++import { MemoryKvPrimitives } from "../data/memory_kv_primitives.ts";
++import { DataStoreSpacePrimitives } from "./datastore_space_primitives.ts";
++import {
++  commitConditionalWrite,
++  recoverConditionalWrite,
++  conditionalWriteKey,
++} from "./conditional_write.ts";
++import {
++  PreconditionFailedError,
++  type HttpSpacePrimitives,
++} from "./http_space_primitives.ts";
++
++const bytes = (text: string) => new TextEncoder().encode(text);
++const text = (data: Uint8Array) => new TextDecoder().decode(data);
++
++async function setup(initial: string | null = "original") {
++  let remoteHash = initial === null ? null : await hashSHA256(bytes(initial));
++  let remoteText = initial;
++  const remote: Pick<HttpSpacePrimitives, "writeFileConditional"> = {
++    writeFileConditional: vi.fn<HttpSpacePrimitives["writeFileConditional"]>(
++      async (path, data, _meta, precondition) => {
++        const nextHash = await hashSHA256(data);
++        if (
++          precondition?.type === "notExists"
++            ? remoteHash !== null
++            : precondition?.type !== "matchesHash" ||
++              precondition.hash !== remoteHash
++        ) {
++          throw new PreconditionFailedError();
++        }
++        remoteHash = nextHash;
++        remoteText = text(data);
++        return {
++          remoteHash: nextHash,
++          meta: {
++            name: path,
++            lastModified: Date.now(),
++            created: 0,
++            size: data.length,
++            perm: "rw",
++            contentType: "text/markdown",
++          },
++        };
++      },
++    ),
++  };
++  async function client() {
++    const kv = new MemoryKvPrimitives();
++    const local = new DataStoreSpacePrimitives(kv);
++    if (initial !== null) await local.writeFile("note.md", bytes(initial));
++    return { kv, local, remote, recordSynced: vi.fn(async () => {}) };
++  }
++  return {
++    client,
++    remote,
++    readRemote: () => remoteText,
++    expectedHash: remoteHash,
++  };
++}
++
++describe("conditional commit protocol", () => {
++  test.each(["original", null])(
++    "competing clients preserve one winner from %s",
++    async (initial) => {
++      const server = await setup(initial);
++      const a = await server.client();
++      const b = await server.client();
++      const results = await Promise.all(
++        [a, b].map((client, index) =>
++          commitConditionalWrite({
++            ...client,
++            path: "note.md",
++            data: bytes(`proposal ${index}`),
++            expectedHash: server.expectedHash,
++          }),
++        ),
++      );
++      expect(results.map((r) => r.status).sort()).toEqual([
++        "applied",
++        "conflict",
++      ]);
++      const winner = results.findIndex((r) => r.status === "applied");
++      expect(server.readRemote()).toBe(`proposal ${winner}`);
++      const loser = [a, b][1 - winner];
++      expect(
++        (await loser.kv.batchGet([conditionalWriteKey("note.md")]))[0],
++      ).toBeUndefined();
++      expect(loser.recordSynced).not.toHaveBeenCalled();
++      if (initial !== null)
++        expect(text((await loser.local.readFile("note.md")).data)).toBe(
++          initial,
++        );
++      else await expect(loser.local.readFile("note.md")).rejects.toThrow();
++    },
++  );
++
++  test("newer local content rejects an approved edit before any server request", async () => {
++    const server = await setup();
++    const client = await server.client();
++    await client.local.writeFile("note.md", bytes("unsynchronised user edit"));
++    const result = await commitConditionalWrite({
++      ...client,
++      path: "note.md",
++      data: bytes("proposal"),
++      expectedHash: server.expectedHash,
++    });
++    expect(result.status).toBe("conflict");
++    expect(server.remote.writeFileConditional).not.toHaveBeenCalled();
++    expect(text((await client.local.readFile("note.md")).data)).toBe(
++      "unsynchronised user edit",
++    );
++  });
++
++  test("a local deletion cannot be mistaken for an uncached remote note", async () => {
++    const server = await setup();
++    const client = await server.client();
++    await client.local.deleteFile("note.md");
++    const result = await commitConditionalWrite({
++      ...client,
++      path: "note.md",
++      data: bytes("proposal"),
++      expectedHash: server.expectedHash,
++    });
++    expect(result.status).toBe("conflict");
++    expect(server.remote.writeFileConditional).not.toHaveBeenCalled();
++  });
++
++  test("a lost response records an unknown outcome and forbids proposal replay", async () => {
++    const server = await setup();
++    const client = await server.client();
++    const commit = server.remote.writeFileConditional;
++    server.remote.writeFileConditional = vi.fn<
++      HttpSpacePrimitives["writeFileConditional"]
++    >(async (...args) => {
++      await commit(...args);
++      throw new Error("Connection lost after commit");
++    });
++    const args = {
++      ...client,
++      path: "note.md",
++      data: bytes("proposal"),
++      expectedHash: server.expectedHash,
++    };
++    expect((await commitConditionalWrite(args)).status).toBe("unknown");
++    expect((await commitConditionalWrite(args)).status).toBe("unknown");
++    expect(server.remote.writeFileConditional).toHaveBeenCalledTimes(1);
++    expect(server.readRemote()).toBe("proposal");
++    expect(
++      (await client.kv.batchGet([conditionalWriteKey("note.md")]))[0],
++    ).toBeDefined();
++    expect(text((await client.local.readFile("note.md")).data)).toBe(
++      "original",
++    );
++  });
++
++  test("a failed local checkpoint keeps the durable recovery marker", async () => {
++    const server = await setup();
++    const client = await server.client();
++    client.recordSynced.mockRejectedValueOnce(new Error("Storage failed"));
++    expect(
++      (
++        await commitConditionalWrite({
++          ...client,
++          path: "note.md",
++          data: bytes("proposal"),
++          expectedHash: server.expectedHash,
++        })
++      ).status,
++    ).toBe("unknown");
++    expect(server.readRemote()).toBe("proposal");
++    expect(
++      (await client.kv.batchGet([conditionalWriteKey("note.md")]))[0],
++    ).toBeDefined();
++  });
++
++  test("cancellation before commit leaves both copies unchanged", async () => {
++    const server = await setup();
++    const client = await server.client();
++    await expect(
++      commitConditionalWrite({
++        ...client,
++        path: "note.md",
++        data: bytes("proposal"),
++        expectedHash: server.expectedHash,
++        signal: AbortSignal.abort(),
++      }),
++    ).rejects.toThrow();
++    expect(server.remote.writeFileConditional).not.toHaveBeenCalled();
++    expect(server.readRemote()).toBe("original");
++  });
++});
++
++describe("conditional write recovery", () => {
++  test.each([false, true])(
++    "recovers a confirmed commit after local cache written=%s without resending",
++    async (localWritten) => {
++      const server = await setup();
++      const client = await server.client();
++      const proposedHash = await hashSHA256(bytes("proposal"));
++      await client.kv.batchSet([
++        {
++          key: conditionalWriteKey("note.md"),
++          value: {
++            expectedHash: server.expectedHash,
++            localHash: server.expectedHash,
++            proposedHash,
++          },
++        },
++      ]);
++      if (localWritten)
++        await client.local.writeFile("note.md", bytes("proposal"));
++      const recordSynced = vi.fn(async () => {});
++      const readFileWithHash: HttpSpacePrimitives["readFileWithHash"] =
++        async () => ({
++          data: bytes("proposal"),
++          remoteHash: proposedHash,
++          meta: {
++            name: "note.md",
++            created: 0,
++            lastModified: 23,
++            size: 8,
++            perm: "rw",
++            contentType: "text/markdown",
++          },
++        });
++      const result = await recoverConditionalWrite({
++        ...client,
++        path: "note.md",
++        recordSynced,
++        remote: { readFileWithHash },
++      });
++      expect(result?.status).toBe("applied");
++      expect(text((await client.local.readFile("note.md")).data)).toBe(
++        "proposal",
++      );
++      expect(recordSynced).toHaveBeenCalledTimes(1);
++      expect(server.remote.writeFileConditional).not.toHaveBeenCalled();
++      expect(
++        (await client.kv.batchGet([conditionalWriteKey("note.md")]))[0],
++      ).toBeUndefined();
++    },
++  );
++
++  test("preserves a later local edit and keeps sync blocked", async () => {
++    const server = await setup();
++    const client = await server.client();
++    await client.kv.batchSet([
++      {
++        key: conditionalWriteKey("note.md"),
++        value: {
++          expectedHash: server.expectedHash,
++          localHash: server.expectedHash,
++          proposedHash: await hashSHA256(bytes("proposal")),
++        },
++      },
++    ]);
++    await client.local.writeFile("note.md", bytes("later user edit"));
++    const readFileWithHash = vi.fn<HttpSpacePrimitives["readFileWithHash"]>();
++    const result = await recoverConditionalWrite({
++      ...client,
++      path: "note.md",
++      remote: { readFileWithHash },
++    });
++    expect(result?.status).toBe("unknown");
++    expect(text((await client.local.readFile("note.md")).data)).toBe(
++      "later user edit",
++    );
++    expect(readFileWithHash).not.toHaveBeenCalled();
++    expect(
++      (await client.kv.batchGet([conditionalWriteKey("note.md")]))[0],
++    ).toBeDefined();
++  });
++});
+diff --git a/client/spaces/file_lock.ts b/client/spaces/file_lock.ts
+new file mode 100644
+index 0000000..701dc91
+--- /dev/null
++++ b/client/spaces/file_lock.ts
+@@ -0,0 +1,23 @@
++/** Cooperating mutations share a native lock across tabs and workers. */
++export function withSpaceFileLock<T>(
++  spaceUrl: string,
++  path: string,
++  operation: () => Promise<T>,
++): Promise<T> {
++  const locks = globalThis.navigator?.locks;
++  // Ordinary sync remains available on older hosts. Conditional writes must
++  // require this capability before entering their commit protocol.
++  if (!locks) return operation();
++  return locks.request(
++    `silverbullet:file:${JSON.stringify([spaceUrl, path])}`,
++    operation,
++  );
++}
++
++export function requireFileLocks(): void {
++  if (!globalThis.navigator?.locks) {
++    throw new Error(
++      "Conditional writes require the Web Locks API in a secure context",
++    );
++  }
++}
