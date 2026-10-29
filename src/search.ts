@@ -1,3 +1,4 @@
+import { rank } from "@silverbulletmd/silverbullet/lib/fuzzy";
 import { space } from "@silverbulletmd/silverbullet/syscalls";
 import { aiSettings, currentEmbeddingProvider } from "./init.ts";
 import { searchEmbeddings } from "./embeddings.ts";
@@ -27,14 +28,31 @@ export async function searchNotes(
     path,
     limit = 20,
     caseSensitive = false,
+    offset = 0,
+    surroundingLines = 0,
   } = args;
   if (typeof query !== "string" || !query.trim() || query.length > 1000)
     return {
       success: false,
       error: "query must contain 1 to 1000 characters.",
     };
-  if (mode !== "text" && mode !== "semantic")
-    return { success: false, error: "mode must be text or semantic." };
+  if (!["text", "semantic", "title", "path"].includes(String(mode)))
+    return {
+      success: false,
+      error: "mode must be text, semantic, title or path.",
+    };
+  if (
+    !Number.isInteger(offset) ||
+    (offset as number) < 0 ||
+    (offset as number) > 10000 ||
+    !Number.isInteger(surroundingLines) ||
+    (surroundingLines as number) < 0 ||
+    (surroundingLines as number) > 5
+  )
+    return {
+      success: false,
+      error: "offset must be 0 to 10000 and surroundingLines 0 to 5.",
+    };
   if (
     path !== undefined &&
     (typeof path !== "string" ||
@@ -65,29 +83,48 @@ export async function searchNotes(
           error:
             "Semantic search requires enabled embedding indexing and an embedding model. Use text mode otherwise.",
         };
-      const results = await searchEmbeddings(query, limit, false, {
-        allowedReadPaths: permissions?.allowedReadPaths,
-        path: path as string | undefined,
-        abortSignal: context?.abortSignal,
-      });
+      const results = await searchEmbeddings(
+        query,
+        (offset as number) + limit + 1,
+        false,
+        {
+          allowedReadPaths: permissions?.allowedReadPaths,
+          path: path as string | undefined,
+          abortSignal: context?.abortSignal,
+        },
+      );
       context?.abortSignal?.throwIfAborted();
       return {
         success: true,
         result: JSON.stringify({
           mode,
-          results: results.map((r) => ({
-            page: r.page,
-            ref: r.ref,
-            similarity: r.similarity,
-            snippet: r.text.slice(0, 500),
-          })),
+          nextOffset:
+            results.length > (offset as number) + limit
+              ? (offset as number) + limit
+              : null,
+          results: results
+            .slice(offset as number, (offset as number) + limit)
+            .map((r) => ({
+              page: r.page,
+              ref: r.ref,
+              similarity: r.similarity,
+              snippet: r.text.slice(0, 500),
+            })),
         }),
-        summary: `Semantic search returned ${results.length} matches`,
+        summary: `Semantic search returned ${results.slice(offset as number, (offset as number) + limit).length} matches`,
       };
     }
 
     const needle = caseSensitive ? query : query.toLowerCase();
-    const results: { page: string; line: number; snippet: string }[] = [];
+    const results: {
+      page: string;
+      line: number;
+      snippet: string;
+      context?: string;
+      startLine?: number;
+      endLine?: number;
+    }[] = [];
+    let skipped = 0;
     let unreadablePages = 0;
     let truncated = false;
     const pages = (await space.listPages())
@@ -97,6 +134,29 @@ export async function searchNotes(
           matchesSearchPath(p.name, path as string | undefined),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
+    if (mode === "title" || mode === "path") {
+      const ranked = rank(
+        pages.map((p) => ({
+          page: p.name,
+          name: mode === "title" ? p.name.split("/").at(-1)! : p.name,
+        })),
+        query,
+        { fields: { name: { weight: 1, segments: mode === "path" } } },
+      ).filter((p) => !caseSensitive || p.name.includes(query));
+      return {
+        success: true,
+        result: JSON.stringify({
+          mode,
+          results: ranked
+            .slice(offset as number, (offset as number) + limit)
+            .map((p) => ({ page: p.page })),
+          nextOffset:
+            ranked.length > (offset as number) + limit
+              ? (offset as number) + limit
+              : null,
+        }),
+      };
+    }
     search: for (const page of pages) {
       context?.abortSignal?.throwIfAborted();
       let content: string;
@@ -106,6 +166,7 @@ export async function searchNotes(
         unreadablePages++;
         continue;
       }
+      context?.abortSignal?.throwIfAborted();
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
@@ -113,6 +174,7 @@ export async function searchNotes(
           needle,
         );
         if (position < 0) continue;
+        if (skipped++ < (offset as number)) continue;
         if (results.length === limit) {
           truncated = true;
           break search;
@@ -122,12 +184,37 @@ export async function searchNotes(
           page: page.name,
           line: i + 1,
           snippet: line.slice(start, start + 500),
+          ...(surroundingLines
+            ? {
+                startLine: Math.max(0, i - (surroundingLines as number)) + 1,
+                endLine: Math.min(
+                  lines.length,
+                  i + (surroundingLines as number) + 1,
+                ),
+                context: lines
+                  .slice(
+                    Math.max(0, i - (surroundingLines as number)),
+                    i + (surroundingLines as number) + 1,
+                  )
+                  .map(
+                    (text, index) =>
+                      `${Math.max(0, i - (surroundingLines as number)) + index + 1}: ${text.slice(0, 500)}`,
+                  )
+                  .join("\n"),
+              }
+            : {}),
         });
       }
     }
     return {
       success: true,
-      result: JSON.stringify({ mode, results, truncated, unreadablePages }),
+      result: JSON.stringify({
+        mode,
+        results,
+        truncated,
+        unreadablePages,
+        nextOffset: truncated ? (offset as number) + results.length : null,
+      }),
       summary: `Text search returned ${results.length} matches${truncated ? " (limit reached)" : ""}`,
     };
   } catch (error) {
@@ -141,7 +228,7 @@ export async function searchNotes(
 export function buildSearchNotesTool(): LuaToolDefinition {
   return {
     description:
-      "Search note contents explicitly. Text mode finds literal text and returns page names, line numbers and snippets, like grep -F. Semantic mode finds related indexed passages and requires embeddings. Use read_note for more context. Results respect the current agent's read permissions.",
+      "Search notes explicitly. Title and path modes rank note names without reading contents. Text mode finds literal text and returns page names, line numbers and snippets, like grep -F. Semantic mode finds related indexed passages and requires embeddings. Use read_note for more context. Results respect the current agent's read permissions.",
     readOnly: true,
     source: "builtin",
     handler: "",
@@ -154,7 +241,7 @@ export function buildSearchNotesTool(): LuaToolDefinition {
         },
         mode: {
           type: "string",
-          enum: ["text", "semantic"],
+          enum: ["text", "semantic", "title", "path"],
           description:
             "Defaults to text. No regular expressions or shell commands.",
         },
@@ -167,6 +254,19 @@ export function buildSearchNotesTool(): LuaToolDefinition {
           minimum: 1,
           maximum: 50,
           description: "Maximum matches, default 20.",
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          maximum: 10000,
+          description:
+            "Use nextOffset from the previous result with the same search arguments.",
+        },
+        surroundingLines: {
+          type: "integer",
+          minimum: 0,
+          maximum: 5,
+          description: "Surrounding lines for text matches, default 0.",
         },
         caseSensitive: {
           type: "boolean",

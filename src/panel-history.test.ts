@@ -42,3 +42,36 @@ test("late checkpoints cannot overwrite a completed turn or a new conversation",
     messages: [],
   });
 });
+
+test("compaction survives checkpoints and subsequent turns, and rejects stale updates", async () => {
+  const { savePanelCompaction } = await import("./panel-history.ts");
+  const state = {
+    version: 1 as const,
+    key: "scope",
+    count: 2,
+    hash: "digest",
+    summary: "Completed work",
+  };
+  await beginPanelTurn("summary-chat", "first", [], "scope");
+  await savePanelCompaction("summary-chat", "first", state);
+  await savePanelCheckpoint(
+    "summary-chat",
+    "first",
+    { messages: [] },
+    "complete",
+  );
+  const saved = await loadPanelHistory(() => false);
+  expect(saved?.compaction).toEqual(state);
+  await beginPanelTurn(
+    "summary-chat",
+    "second",
+    [],
+    "scope",
+    saved?.compaction,
+  );
+  await savePanelCompaction("summary-chat", "first", {
+    ...state,
+    summary: "Stale",
+  });
+  expect((await loadPanelHistory(() => true))?.compaction).toEqual(state);
+});

@@ -97,6 +97,7 @@ try {
         case "silverbullet-ai.getPollState":
           return { agentRef: null };
         case "silverbullet-ai.startPanelChat":
+          (globalThis as any).submittedOptions = args[3];
           (globalThis as any).submittedMessages.push(
             JSON.parse(JSON.stringify(args[1])),
           );
@@ -203,6 +204,7 @@ try {
     await panel.getByText("Private reasoning", { exact: true }).count(),
     0,
   );
+  await panel.locator("#attach-page").check();
   await panel.locator("#user-input").fill("Continue");
   await panel.locator("#send-btn").click();
   await panel.waitForFunction(
@@ -211,6 +213,11 @@ try {
   const submitted = await panel.evaluate(
     () => (globalThis as any).submittedMessages[1],
   );
+  assert.deepEqual(
+    await panel.evaluate(() => (globalThis as any).submittedOptions),
+    { attachPage: true },
+  );
+  assert.equal(await panel.locator("#attach-page").isChecked(), false);
   assert.deepEqual(submitted.slice(0, -1), saved);
   assert.deepEqual(submitted.at(-1), { role: "user", content: "Continue" });
   await panel.waitForFunction(

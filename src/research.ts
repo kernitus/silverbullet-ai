@@ -15,7 +15,8 @@ export function researchTool(options: {
   providerOptions?: ProviderOptions;
   permissions?: PathPermissions;
   maxSteps?: number;
-  onUsage?: (usage: import("ai").LanguageModelUsage) => void;
+  onUsage?: (usage: import("ai").LanguageModelUsage) => void | Promise<void>;
+  beforeRequest?: () => void;
 }) {
   const maxSteps = options.maxSteps ?? 6;
   if (!Number.isInteger(maxSteps) || maxSteps < 1)
@@ -70,6 +71,7 @@ export function researchTool(options: {
         abortSignal,
         maxChars: 40000,
         onUsage: options.onUsage,
+        beforeRequest: options.beforeRequest,
       });
       const agent = new ToolLoopAgent({
         model: options.model,
@@ -81,12 +83,17 @@ export function researchTool(options: {
         stopWhen: isStepCount(Math.min(12, maxSteps)),
         toolCallConcurrency: 1,
         maxOutputTokens: 2000,
-        prepareStep: async ({ messages }) => ({
-          messages: await prepare(messages),
-        }),
+        prepareStep: async ({ messages }) => {
+          options.beforeRequest?.();
+          const prepared = await prepare(messages);
+          options.beforeRequest?.();
+          return { messages: prepared };
+        },
+        onStepEnd: async (step) => {
+          await options.onUsage?.(step.usage);
+        },
       });
       const result = await agent.generate({ prompt: task, abortSignal });
-      options.onUsage?.(result.totalUsage);
       return boundedToolOutput(
         result.text ||
           "Research reached its step limit without a final answer. Narrow the task.",

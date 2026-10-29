@@ -252,7 +252,7 @@ ai.agents.journal = {
 - If `allowedReadPaths` is set:
   - Tools with `readPathParam` can only read pages starting with those prefixes
   - Wiki-links in the agent's page body are filtered (only allowed pages included as context)
-  - Current page content/selection only shown if the page is within allowed paths
+  - Current page name and selection are included only within allowed paths; full content requires **Attach current page**
 - If `allowedWritePaths` is set, tools with `writePathParam` can only write to pages starting with those prefixes
 - If not set, no path restrictions apply
 
@@ -260,8 +260,7 @@ This is useful for creating restricted agents that can only operate on specific 
 
 ### Note search
 
-Agents can call `search_notes` to find notes with literal text matching or semantic
-search. Results respect `allowedReadPaths`. Text mode works without embeddings;
+Agents can call `search_notes` to find notes with literal text matching, fuzzy title or path matching, or semantic search. Use `nextOffset` for subsequent result pages and `surroundingLines` for nearby text. Results respect `allowedReadPaths`. Text mode works without embeddings;
 semantic mode requires `indexEmbeddings` and a configured embedding model.
 Include `search_notes` in an agent's `tools` list if it uses a whitelist, or add it
 to `toolsExclude` to disable search for that agent.
@@ -280,3 +279,8 @@ Path restrictions are enforced by built-in TypeScript tools. An agent with `allo
 `eval_lua` is disabled by default. Unrestricted agents may explicitly enable it with `allowUnsafeLua = true` in the agent definition or `ai.chat` configuration. Approval is still required unless the user has explicitly disabled tool approvals. Path restrictions always override the opt-in. Other custom Lua handlers remain trusted code for unrestricted agents; their metadata does not make them safe to run in a restricted agent.
 
 Start a new chat before changing to a restricted agent or changing its path permissions. Previously saved messages may contain information outside the new scope, so the panel refuses to carry that history into the restricted conversation.
+
+
+## Native note editing
+
+`create_note` creates a page only when it does not exist. `edit_note` replaces a unique exact text match; read the note first and include enough surrounding text to identify one occurrence. Both tools respect read and write permissions and use diff approvals, unless approvals have explicitly been disabled. A changed page invalidates its pending edit. Restricted agents cannot edit notes containing Space Lua. Include these tools in an explicit `tools` list to enable editing without unrestricted Lua.

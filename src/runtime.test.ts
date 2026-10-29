@@ -433,3 +433,226 @@ test("long tool loops compact completed steps while keeping the user request and
   expect(compacted.slice(-2)).toEqual(messages.slice(-2));
   expect(JSON.stringify(compacted)).not.toContain('"toolCallId":"old"');
 });
+
+test("persisted compaction reuses an exact prefix and summarises only new records", async () => {
+  const model = new MockLanguageModelV3({
+    doGenerate: answer("Remember completed work"),
+  });
+  let state: import("./context.ts").CompactionState | undefined;
+  const original: ModelMessage[] = [
+    { role: "user", content: "OLD_RECORD " + "x".repeat(9000) },
+    { role: "assistant", content: "Completed" },
+    { role: "user", content: "Continue" },
+  ];
+  const options = {
+    model,
+    maxChars: 8000,
+    cacheKey: "model-and-scope",
+    onCompaction: async (next: import("./context.ts").CompactionState) => {
+      state = next;
+    },
+  };
+  await createContextManager(options)(original);
+  const firstCount = model.doGenerateCalls.length;
+  await createContextManager({ ...options, state })(original);
+  expect(model.doGenerateCalls).toHaveLength(firstCount);
+  const extended: ModelMessage[] = [
+    ...original,
+    { role: "assistant", content: "NEW_RECORD " + "y".repeat(5000) },
+    { role: "user", content: "Next question" },
+  ];
+  await createContextManager({ ...options, state })(extended);
+  const newCalls = model.doGenerateCalls.slice(firstCount);
+  expect(JSON.stringify(newCalls)).toContain("NEW_RECORD");
+  expect(JSON.stringify(newCalls)).not.toContain("OLD_RECORD");
+  const beforeInvalidation = model.doGenerateCalls.length;
+  const changed = structuredClone(extended);
+  changed[0] = { role: "user", content: "CHANGED_RECORD " + "x".repeat(9000) };
+  await createContextManager({ ...options, state })(changed);
+  expect(
+    JSON.stringify(model.doGenerateCalls.slice(beforeInvalidation)),
+  ).toContain("CHANGED_RECORD");
+  const beforeScopeChange = model.doGenerateCalls.length;
+  await createContextManager({ ...options, state, cacheKey: "another-scope" })(
+    changed,
+  );
+  expect(model.doGenerateCalls.length).toBeGreaterThan(beforeScopeChange);
+});
+
+test("completed step usage survives failure and token budgets prevent subsequent requests", async () => {
+  const init = await import("./init.ts");
+  await syscall("mock.setConfig", "ai", {
+    textModels: [
+      { name: "mock", provider: "mock", modelName: "mock", requireAuth: false },
+    ],
+  });
+  await init.initializeOpenAI();
+  const { aiSettings } = init;
+  const definition = {
+    source: "builtin" as const,
+    handler: "",
+    description: "Read",
+    readOnly: true,
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ success: true, result: "read" }),
+  };
+  for (const outcome of ["failure", "budget", "cancel"]) {
+    const controller = new AbortController();
+    aiSettings.chat.runMaxTokens = outcome === "budget" ? 5 : undefined;
+    let calls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => {
+        if (++calls > 1) throw new Error("Provider unavailable");
+        return {
+          ...answer(""),
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "read-1",
+              toolName: "read",
+              input: "{}",
+            },
+          ],
+          finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        };
+      },
+    });
+    const reported: unknown[] = [];
+    await expect(
+      runAgenticChat({
+        provider: provider(model),
+        messages: [{ role: "user", content: "Read" }],
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "read",
+              description: "Read",
+              parameters: definition.parameters,
+            },
+          },
+        ],
+        luaTools: new Map([["read", definition]]),
+        abortSignal: controller.signal,
+        onUsage: async (delta) => {
+          reported.push(delta);
+          if (outcome === "cancel") controller.abort(new Error("Stopped"));
+        },
+      }),
+    ).rejects.toThrow(
+      outcome === "budget"
+        ? "token budget"
+        : outcome === "cancel"
+          ? "Stopped"
+          : "Provider unavailable",
+    );
+    expect(reported).toEqual([
+      { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5 },
+    ]);
+    expect(calls).toBe(outcome === "failure" ? 2 : 1);
+  }
+  delete aiSettings.chat.runMaxTokens;
+});
+
+test("elapsed run budget cancels an in-flight request", async () => {
+  const init = await import("./init.ts");
+  await syscall("mock.setConfig", "ai", { providers: {} });
+  await init.initializeOpenAI(false);
+  const { aiSettings } = init;
+  aiSettings.chat.runTimeoutMs = 20;
+  try {
+    const model = new MockLanguageModelV3({
+      doGenerate: async ({ abortSignal }) => {
+        abortSignal!.throwIfAborted();
+        return new Promise((_resolve, reject) =>
+          abortSignal!.addEventListener(
+            "abort",
+            () => reject(abortSignal!.reason),
+            { once: true },
+          ),
+        );
+      },
+    });
+    await expect(
+      runAgenticChat({
+        provider: provider(model),
+        messages: [{ role: "user", content: "Wait" }],
+        tools: [],
+        luaTools: new Map(),
+      }),
+    ).rejects.toThrow(/timeout|timed out/i);
+  } finally {
+    delete aiSettings.chat.runTimeoutMs;
+  }
+});
+
+test("summary requests share the run token budget and retain reported usage on failure", async () => {
+  const init = await import("./init.ts");
+  await syscall("mock.setConfig", "ai", {
+    providers: {},
+    chat: { contextMaxChars: 8000, runMaxTokens: 5 },
+  });
+  await init.initializeOpenAI(false);
+  try {
+    const model = new MockLanguageModelV3({ doGenerate: answer("Memory") });
+    const onUsage = vi.fn(async () => {});
+    await expect(
+      runAgenticChat({
+        provider: provider(model),
+        tools: [],
+        luaTools: new Map(),
+        onUsage,
+        messages: [
+          { role: "user", content: "Old " + "x".repeat(9000) },
+          { role: "assistant", content: "Done" },
+          { role: "user", content: "Next" },
+        ],
+      }),
+    ).rejects.toThrow("token budget");
+    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(onUsage).toHaveBeenCalledWith({
+      prompt_tokens: 2,
+      completion_tokens: 3,
+      total_tokens: 5,
+    });
+  } finally {
+    delete init.aiSettings.chat.runMaxTokens;
+    delete init.aiSettings.chat.contextMaxChars;
+  }
+});
+
+test("research reports completed steps before its shared budget blocks another request", async () => {
+  let total = 0;
+  const model = new MockLanguageModelV3({
+    doGenerate: {
+      ...answer(""),
+      content: [
+        {
+          type: "tool-call",
+          toolCallId: "research-read",
+          toolName: "read_note",
+          input: '{"page":"Private"}',
+        },
+      ],
+      finishReason: { unified: "tool-calls", raw: "tool_calls" },
+    },
+  });
+  const research = researchTool({
+    model,
+    permissions: { allowedReadPaths: [] },
+    onUsage: async (usage) => {
+      total += usage.totalTokens ?? 0;
+    },
+    beforeRequest: () => {
+      if (total >= 5) throw new Error("Shared budget reached");
+    },
+  });
+  await expect(
+    research.execute!(
+      { task: "Read Private" },
+      { context: {}, toolCallId: "research", messages: [] },
+    ),
+  ).rejects.toThrow("Shared budget");
+  expect(total).toBe(5);
+  expect(model.doGenerateCalls).toHaveLength(1);
+});

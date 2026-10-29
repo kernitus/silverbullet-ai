@@ -1,3 +1,4 @@
+import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
 import {
   ToolLoopAgent,
   isStepCount,
@@ -39,7 +40,7 @@ import {
 import { discoverMCPTools, executeMCPTool } from "./mcp/index.ts";
 import { createContextManager, boundedToolOutput } from "./context.ts";
 import { researchTool } from "./research.ts";
-import { buildReadNoteTool } from "./note-tools.ts";
+import { buildReadNoteTool, buildWriteNoteTool } from "./note-tools.ts";
 import { canUseTool, filterCapabilities } from "./capabilities.ts";
 import {
   registerRun,
@@ -275,6 +276,8 @@ export async function discoverAllTools(): Promise<
   ]);
   tools.set("search_notes", buildSearchNotesTool());
   tools.set("read_note", buildReadNoteTool());
+  tools.set("create_note", buildWriteNoteTool(true, requestWriteApproval));
+  tools.set("edit_note", buildWriteNoteTool(false, requestWriteApproval));
   for (const [name, def] of mcpTools) {
     tools.set(name, def);
   }
@@ -628,8 +631,17 @@ export async function requestWriteApproval(
   page: string,
   newContent: string,
   runId?: string,
+  expected?: string | null,
+  abortSignal?: AbortSignal,
 ): Promise<{ success: boolean; error?: string }> {
-  const signal = signalForRun(runId);
+  const signal = signalForRun(runId) ?? abortSignal;
+  signal?.throwIfAborted();
+  const currentContent = await readWriteSnapshot(page);
+  if (expected !== undefined && currentContent !== expected)
+    return {
+      success: false,
+      error: "Note changed before approval. Read it again.",
+    };
   signal?.throwIfAborted();
   if (aiSettings?.chat?.skipToolApproval) {
     await space.writePage(page, newContent);
@@ -639,7 +651,6 @@ export async function requestWriteApproval(
   const writeId = `write_${Date.now()}_${crypto.randomUUID()}`;
 
   // Read current content and compute diff
-  const currentContent = await readWriteSnapshot(page);
   const isNewPage = currentContent === null;
   const diff = computeSimpleDiff(currentContent ?? "", newContent);
 
@@ -996,6 +1007,11 @@ export type AgenticChatOptions = {
   runId?: string;
   onCheckpoint?: (checkpoint: RunCheckpoint) => Promise<void>;
   enableResearch?: boolean;
+  compaction?: import("./context.ts").CompactionState;
+  onCompaction?: (
+    state: import("./context.ts").CompactionState,
+  ) => Promise<void>;
+  onUsage?: (usage: Usage) => Promise<void>;
 };
 
 export type AgenticChatResult = {
@@ -1041,6 +1057,7 @@ async function runSDKChat(
     const response = streaming
       ? await provider.streamChat({ ...options, onComplete: undefined })
       : await provider.chat(messages);
+    if (response.usage) await options.onUsage?.(response.usage);
     return {
       messages: [
         ...messages,
@@ -1060,7 +1077,26 @@ async function runSDKChat(
     options.tools.filter((tool) => permitted.has(tool.function.name)),
   );
   const runId = options.runId ?? crypto.randomUUID();
-  const signal = options.abortSignal ?? new AbortController().signal;
+  const timeout = aiSettings?.chat?.runTimeoutMs;
+  const tokenLimit = aiSettings?.chat?.runMaxTokens;
+  for (const [name, value] of [
+    ["runTimeoutMs", timeout],
+    ["runMaxTokens", tokenLimit],
+  ] as const)
+    if (
+      value !== undefined &&
+      (!Number.isSafeInteger(value) || value < 1 || value > 2147483647)
+    )
+      throw new Error(
+        `chat.${name} must be a positive integer no greater than 2147483647`,
+      );
+  const signals = [
+    options.abortSignal,
+    timeout ? AbortSignal.timeout(timeout) : undefined,
+  ].filter((s): s is AbortSignal => !!s);
+  const signal = signals.length
+    ? AbortSignal.any(signals)
+    : new AbortController().signal;
   const interimMessages: ModelMessage[] = [];
   let inFlight: PendingTool | undefined;
   let checkpointFailure: Error | undefined;
@@ -1079,11 +1115,24 @@ async function runSDKChat(
       throw checkpointFailure;
     }
   };
-  let extraUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-  const accountUsage = (usage: import("ai").LanguageModelUsage) => {
-    extraUsage.inputTokens += usage.inputTokens ?? 0;
-    extraUsage.outputTokens += usage.outputTokens ?? 0;
-    extraUsage.totalTokens += usage.totalTokens ?? 0;
+  const usageTotal: Usage = {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+  };
+  const accountUsage = async (usage: import("ai").LanguageModelUsage) => {
+    const delta = toUsage(usage);
+    usageTotal.prompt_tokens += delta.prompt_tokens;
+    usageTotal.completion_tokens += delta.completion_tokens;
+    usageTotal.total_tokens += delta.total_tokens;
+    await options.onUsage?.(delta);
+  };
+  const checkBudget = () => {
+    signal.throwIfAborted();
+    if (tokenLimit && usageTotal.total_tokens >= tokenLimit)
+      throw new Error(
+        "Run token budget reached. Completed work has been saved.",
+      );
   };
   const prepareContext = createContextManager({
     model: provider.languageModel,
@@ -1091,6 +1140,19 @@ async function runSDKChat(
     abortSignal: signal,
     maxChars: aiSettings?.chat?.contextMaxChars,
     onUsage: accountUsage,
+    beforeRequest: checkBudget,
+    state: options.compaction,
+    cacheKey: await hashSHA256(
+      JSON.stringify([
+        typeof provider.languageModel === "string"
+          ? provider.languageModel
+          : [provider.languageModel.provider, provider.languageModel.modelId],
+        provider.providerOptions,
+        permissions,
+        messages.filter((m) => m.role === "system"),
+      ]),
+    ),
+    onCompaction: options.onCompaction,
   });
   let executedTools = false;
   let stopAfterToolError = false;
@@ -1166,6 +1228,7 @@ async function runSDKChat(
       permissions,
       maxSteps: aiSettings?.chat?.researchMaxSteps,
       onUsage: accountUsage,
+      beforeRequest: checkBudget,
     });
   }
   const settings = {
@@ -1178,11 +1241,8 @@ async function runSDKChat(
     stopWhen: isStepCount(maxIterations),
     // Serial execution preserves note edit order and approval dialogue order.
     toolCallConcurrency: 1,
-    prepareStep: async ({
-      messages: sdkMessages,
-    }: {
-      messages: ModelMessage[];
-    }) => {
+    prepareStep: async () => {
+      checkBudget();
       if (checkpointFailure) throw checkpointFailure;
       if (stopAfterToolError)
         throw new Error(
@@ -1191,21 +1251,21 @@ async function runSDKChat(
       const attachments = pendingAttachments;
       pendingAttachments = [];
       responseMessages.push(...attachments);
-      return {
-        messages: await prepareContext([...sdkMessages, ...attachments]),
-      };
+      const prepared = await prepareContext([...messages, ...responseMessages]);
+      checkBudget();
+      return { messages: prepared };
     },
     onStepEnd: async (step: import("ai").StepResult<ToolSet>) => {
       responseMessages.push(...step.response.messages);
       interimMessages.length = 0;
       inFlight = undefined;
+      await accountUsage(step.usage);
       await checkpoint();
     },
   };
   const execute = async (tools: ToolSet): Promise<AgenticChatResult> => {
     let text: string;
     let reasoning: string | undefined;
-    let usage;
     let finishReason;
     if (streaming) {
       const { messages: inputMessages, ...agentSettings } = settings;
@@ -1225,7 +1285,6 @@ async function runSDKChat(
       signal.throwIfAborted();
       text = await result.text;
       reasoning = fullReasoning || undefined;
-      usage = await result.totalUsage;
       finishReason = await result.finishReason;
     } else {
       const { messages: inputMessages, ...agentSettings } = settings;
@@ -1234,9 +1293,9 @@ async function runSDKChat(
         messages: inputMessages,
         abortSignal: signal,
       });
+      signal.throwIfAborted();
       text = result.text;
       reasoning = result.reasoningText;
-      usage = result.totalUsage;
       finishReason = result.finishReason;
     }
     if (finishReason === "tool-calls") {
@@ -1254,11 +1313,7 @@ async function runSDKChat(
       finalResponse: text,
       finalReasoning: reasoning,
       toolCallsText,
-      usage: {
-        prompt_tokens: (usage.inputTokens ?? 0) + extraUsage.inputTokens,
-        completion_tokens: (usage.outputTokens ?? 0) + extraUsage.outputTokens,
-        total_tokens: (usage.totalTokens ?? 0) + extraUsage.totalTokens,
-      },
+      usage: { ...usageTotal },
     };
   };
   const unregister = registerRun(runId, signal);

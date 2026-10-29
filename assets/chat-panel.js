@@ -41,7 +41,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   const clearAgentBtn = document.getElementById("clear-agent-btn");
   const tokenDisplayEl = document.getElementById("token-display");
   const tokenCountEl = document.getElementById("token-count");
-  const contextLimitEl = document.getElementById("context-limit");
   const reasoningIndicatorEl = document.getElementById("reasoning-indicator");
   const modelDisplayEl = document.getElementById("model-display");
   const modelNameEl = document.getElementById("model-name");
@@ -90,19 +89,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         ? formatNumber(status.model.contextLimit)
         : "--";
       tokenCountEl.textContent = tokenCount;
-      contextLimitEl.textContent = contextLimit;
       overflowTokenCountEl.textContent = tokenCount;
       overflowContextLimitEl.textContent = contextLimit;
-
-      tokenDisplayEl.classList.remove("warning", "danger");
-      if (status.model.contextLimit) {
-        const ratio = status.tokens.total_tokens / status.model.contextLimit;
-        if (ratio > 0.9) {
-          tokenDisplayEl.classList.add("danger");
-        } else if (ratio > 0.75) {
-          tokenDisplayEl.classList.add("warning");
-        }
-      }
 
       // Update reasoning status
       lastReasoningEnabled = status.reasoning?.enabled ?? false;
@@ -540,9 +528,11 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         "silverbullet-ai.startPanelChat",
         chatHistory,
         chatData.id,
+        { attachPage: document.getElementById("attach-page").checked },
       );
 
       if (result.streamId) {
+        document.getElementById("attach-page").checked = false;
         currentStreamId = result.streamId;
         isStreaming = true;
         stopBtn.hidden = false;

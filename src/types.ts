@@ -240,6 +240,8 @@ export type ChatSettings = {
   contextMaxChars?: number;
   toolResultMaxChars?: number;
   researchMaxSteps?: number;
+  runMaxTokens?: number;
+  runTimeoutMs?: number;
   userInformation: string;
   userInstructions: string;
   customContext: string;

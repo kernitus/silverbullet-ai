@@ -154,3 +154,62 @@ test("message enrichment never searches embeddings, even with the old setting en
     [],
   );
 });
+
+test("text search pages matches without duplicates and includes numbered surrounding lines", async () => {
+  const first = JSON.parse(
+    (
+      await searchNotes({
+        query: "needle",
+        path: "Notes",
+        limit: 1,
+        surroundingLines: 1,
+      })
+    ).result!,
+  );
+  expect(first.nextOffset).toBe(1);
+  expect(first.results[0]).toMatchObject({
+    line: 2,
+    startLine: 1,
+    endLine: 3,
+    context: "1: First line\n2: Needle [test]\n3: needle again",
+  });
+  const second = JSON.parse(
+    (
+      await searchNotes({
+        query: "needle",
+        path: "Notes",
+        limit: 2,
+        offset: first.nextOffset,
+      })
+    ).result!,
+  );
+  expect(second.results.map((r: any) => [r.page, r.line])).toEqual([
+    ["Notes/A", 3],
+    ["Notes/B", 1],
+  ]);
+  expect(second.nextOffset).toBe(null);
+});
+
+test("title and path search rank names without reading contents or exposing denied paths", async () => {
+  for (const mode of ["title", "path"]) {
+    const result = JSON.parse(
+      (
+        await searchNotes(
+          { query: mode === "title" ? "A" : "Notes", mode, limit: 1 },
+          { allowedReadPaths: ["Notes"] },
+        )
+      ).result!,
+    );
+    expect(result.results).toEqual([{ page: "Notes/A" }]);
+  }
+  expect(readPages).toEqual([]);
+  const result = JSON.parse(
+    (
+      await searchNotes(
+        { query: "Notes", mode: "path", offset: 1 },
+        { allowedReadPaths: ["Notes"] },
+      )
+    ).result!,
+  );
+  expect(result.results).toEqual([{ page: "Notes/B" }]);
+});

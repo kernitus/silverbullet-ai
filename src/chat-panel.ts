@@ -1,8 +1,10 @@
+import { currentPageContext } from "./page-context.ts";
 import { filterCapabilities, isRestricted } from "./capabilities.ts";
 import { interruptedMessages, type RunCheckpoint } from "./execution.ts";
 import {
   CHAT_HISTORY_KEY,
   beginPanelTurn,
+  savePanelCompaction,
   savePanelCheckpoint,
   loadPanelHistory,
   clearPanelHistory,
@@ -37,7 +39,6 @@ import {
 import {
   assembleMessagesWithAttachments,
   enrichChatMessages,
-  isPathAllowed,
   log,
 } from "./utils.ts";
 import { extractFilesFromMarkdown, getFileHandlerExts } from "./files.ts";
@@ -202,6 +203,7 @@ export async function toggleAIAssistant() {
 export async function startPanelChat(
   messages: ChatMessage[],
   chatId = crypto.randomUUID(),
+  options: { attachPage?: boolean } = {},
 ): Promise<{
   streamId?: string;
   error?: string;
@@ -288,33 +290,15 @@ export async function startPanelChat(
     let contextBlock = "";
     let pageImageSource: { page: string; content: string } | undefined;
     try {
-      const currentPage = await editor.getCurrentPage();
-      const allowedReadPaths = chatAgent?.aiagent?.allowedReadPaths;
-      const pageAllowed = isPathAllowed(currentPage, allowedReadPaths);
-
-      contextBlock = pageAllowed
-        ? `Current page: ${currentPage}`
-        : "Current page is outside the agent's allowed paths.";
+      const pageContext = await currentPageContext(
+        chatAgent?.aiagent?.allowedReadPaths,
+        options.attachPage === true,
+      );
+      contextBlock = pageContext.text;
+      pageImageSource = pageContext.attachment;
       contextBlock += `\nCurrent date and time: ${new Date().toISOString()}`;
-      if (chatAgent) {
-        const agentName = chatAgent.aiagent.name || chatAgent.ref;
-        contextBlock += `\nActive agent: ${agentName}`;
-      }
-
-      // Only include selection and content if page is within allowed paths
-      if (pageAllowed) {
-        const pageContent = await editor.getText();
-        pageImageSource = { page: currentPage, content: pageContent };
-        const selection = await editor.getSelection();
-        if (selection && selection.text) {
-          contextBlock += `\nSelected text: "${selection.text}"`;
-        }
-        const truncatedContent =
-          pageContent.length > 4000
-            ? pageContent.substring(0, 4000) + "\n...(truncated)"
-            : pageContent;
-        contextBlock += `\n\nPage content:\n${truncatedContent}`;
-      }
+      if (chatAgent)
+        contextBlock += `\nActive agent: ${chatAgent.aiagent.name || chatAgent.ref}`;
     } catch (e) {
       log.debug("Could not get page context:", e);
     }
@@ -406,7 +390,11 @@ export async function startPanelChat(
 
     const transientPrefixLength = 1 + agentAttachments.length;
     workingMessages.splice(transientPrefixLength, 0, ...history);
-    await beginPanelTurn(chatId, streamId, messages, scope);
+    const compaction =
+      stored?.id === chatId && stored.scope === scope
+        ? stored.compaction
+        : undefined;
+    await beginPanelTurn(chatId, streamId, messages, scope, compaction);
     const runningId = streamId;
     runToolLoop(
       runningId,
@@ -418,6 +406,7 @@ export async function startPanelChat(
       !chatAgent?.aiagent.toolsExclude?.includes("research_notes") &&
         (!chatAgent?.aiagent.tools?.length ||
           chatAgent.aiagent.tools.includes("research_notes")),
+      compaction,
     )
       .catch(async (error: Error) => {
         const buffer = streamBuffers.get(runningId);
@@ -467,6 +456,7 @@ async function runToolLoop(
   transientPrefixLength: number,
   permissions: PathPermissions,
   enableResearch: boolean,
+  compaction?: import("./context.ts").CompactionState,
 ): Promise<void> {
   const buffer = streamBuffers.get(streamId);
   if (!buffer) return;
@@ -479,6 +469,10 @@ async function runToolLoop(
     runId: streamId,
     abortSignal: buffer.controller.signal,
     enableResearch,
+    compaction,
+    onCompaction: (state) =>
+      savePanelCompaction(buffer.chatId, streamId, state),
+    onUsage: updateTokenUsage,
     onCheckpoint: async (checkpoint) => {
       if (buffer.status !== "streaming") return;
       buffer.checkpoint = {
@@ -495,8 +489,6 @@ async function runToolLoop(
     },
     permissions,
   });
-
-  updateTokenUsage(result.usage);
 
   buffer.messages = result.messages.slice(transientPrefixLength);
   buffer.checkpoint = { messages: buffer.messages };
@@ -681,12 +673,13 @@ async function saveTokenUsage(): Promise<void> {
 /**
  * Updates session token usage from a response and persists it.
  */
-function updateTokenUsage(usage: Usage | undefined): void {
+async function updateTokenUsage(usage: Usage | undefined): Promise<void> {
   if (!usage) return;
-  sessionTokenUsage.prompt_tokens = usage.prompt_tokens;
-  sessionTokenUsage.completion_tokens = usage.completion_tokens;
-  sessionTokenUsage.total_tokens = usage.total_tokens;
-  saveTokenUsage();
+  await loadPersistedTokenUsage();
+  sessionTokenUsage.prompt_tokens += usage.prompt_tokens;
+  sessionTokenUsage.completion_tokens += usage.completion_tokens;
+  sessionTokenUsage.total_tokens += usage.total_tokens;
+  await saveTokenUsage();
 }
 
 /**

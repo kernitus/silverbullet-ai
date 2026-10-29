@@ -7,6 +7,7 @@ export type PanelHistory = {
   id: string;
   messages: ModelMessage[];
   scope?: string;
+  compaction?: import("./context.ts").CompactionState;
   run?: {
     id: string;
     status: "streaming" | "complete" | "error" | "cancelled" | "interrupted";
@@ -28,12 +29,14 @@ export function beginPanelTurn(
   runId: string,
   messages: ModelMessage[],
   scope?: string,
+  compaction?: import("./context.ts").CompactionState,
 ): Promise<void> {
   return serial(() =>
     clientStore.set(CHAT_HISTORY_KEY, {
       id,
       messages,
       scope,
+      compaction,
       run: { id: runId, status: "streaming" },
     }),
   );
@@ -56,6 +59,7 @@ export function savePanelCheckpoint(
     )
       return;
     await clientStore.set(CHAT_HISTORY_KEY, {
+      ...stored,
       id,
       scope: stored.scope,
       messages: checkpoint.messages,
@@ -89,4 +93,23 @@ export function loadPanelHistory(
 }
 export function clearPanelHistory(id: string): Promise<void> {
   return serial(() => clientStore.set(CHAT_HISTORY_KEY, { id, messages: [] }));
+}
+
+export function savePanelCompaction(
+  id: string,
+  runId: string,
+  compaction: import("./context.ts").CompactionState,
+): Promise<void> {
+  return serial(async () => {
+    const stored = (await clientStore.get(CHAT_HISTORY_KEY)) as
+      | PanelHistory
+      | undefined;
+    if (
+      stored?.id !== id ||
+      stored.run?.id !== runId ||
+      stored.run.status !== "streaming"
+    )
+      return;
+    await clientStore.set(CHAT_HISTORY_KEY, { ...stored, compaction });
+  });
 }

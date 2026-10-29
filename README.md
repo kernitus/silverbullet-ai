@@ -13,7 +13,7 @@ Start with `AI: Open Assistant` or `AI: Chat on current page`. The plug can inse
 <!-- start-features -->
 - **Interactive Chat**: Multi-turn conversations using the current note as the chat interface
 - **AI Assistant Panel**: Right-side chat panel for persistent conversations across pages
-- **Note search**: An explicit `search_notes` tool with literal text matching, line numbers and optional semantic search
+- **Note search**: An explicit `search_notes` tool with literal text, title and path matching, pagination, surrounding lines and optional semantic search
 - **Context Enrichment**: Wiki-link parsing, template expansion, and custom enrichment functions
 - **AI Agents**: Create specialised AI personas with custom system prompts, tool filtering, and page or Lua-based definitions
 - **AI Tools**: Built-in tools (read, create, update notes; search, navigate; execute Lua) with custom tool support and approval gates
@@ -72,7 +72,7 @@ After installing the plug, you can access its features through the command palet
 
 The assistant panel stores conversations as Vercel AI SDK `ModelMessage` arrays in SilverBullet’s browser client store. Text, tool calls, full tool results, reasoning and provider metadata are retained for subsequent turns. Displayed tool details are separate from the model messages. Legacy panel histories are not imported. Chat on a page remains a Markdown interface.
 
-The panel supports Stop and recovery from completed SDK steps. Long conversations use bounded tool output and SDK-backed summarisation. The `research_notes` tool delegates read-only research with inherited note permissions. Arbitrary Lua requires `allowUnsafeLua = true` and is unavailable to path-restricted agents. See [agent capabilities](docs/Agents.md) and [execution and context settings](docs/Development.md).
+The panel supports Stop and recovery from completed SDK steps. Page content is included when you select **Attach current page**; otherwise the agent can use `read_note`. Native `create_note` and `edit_note` tools support restricted agents and preview changes before approval. Long conversations use bounded tool output and SDK-backed summarisation. The `research_notes` tool delegates read-only research with inherited note permissions. Arbitrary Lua requires `allowUnsafeLua = true` and is unavailable to path-restricted agents. See [agent capabilities](docs/Agents.md) and [execution and context settings](docs/Development.md).
 
 ### Configuration
 

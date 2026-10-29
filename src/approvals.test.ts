@@ -195,3 +195,114 @@ test("cancelling a run dismisses its approval and prevents a later write", async
     unregister();
   }
 });
+
+test("native edits require a unique match and preserve the expected snapshot through approval", async () => {
+  const { buildWriteNoteTool } = await import("./note-tools.ts");
+  const edit = buildWriteNoteTool(false, requestWriteApproval).execute!;
+  const permissions = {
+    allowedReadPaths: ["Note"],
+    allowedWritePaths: ["Note"],
+  };
+  expect(
+    (
+      await edit(
+        { page: "Secret", oldText: "original", newText: "edited" },
+        permissions,
+      )
+    ).success,
+  ).toBe(false);
+  page = "original original";
+  expect(
+    (
+      await edit(
+        { page: "Note", oldText: "original", newText: "edited" },
+        permissions,
+      )
+    ).success,
+  ).toBe(false);
+  expect(writes).toEqual([]);
+  page = "original";
+  const pending = edit(
+    { page: "Note", oldText: "original", newText: "edited" },
+    permissions,
+  );
+  await vi.waitFor(() => expect(approvalId).not.toBe(""));
+  page = "concurrent edit";
+  await submitApproval("write", approvalId, true);
+  expect((await pending).success).toBe(false);
+  expect(writes).toEqual([]);
+});
+
+test("native create refuses existing notes, unsafe restricted content and cancellation", async () => {
+  const { buildWriteNoteTool } = await import("./note-tools.ts");
+  const create = buildWriteNoteTool(true, requestWriteApproval).execute!;
+  expect((await create({ page: "Note", content: "new" })).success).toBe(false);
+  page = null;
+  expect(
+    (
+      await create(
+        { page: "Note", content: "```space-lua\nerror('x')\n```" },
+        { allowedWritePaths: ["Note"] },
+      )
+    ).success,
+  ).toBe(false);
+  const controller = new AbortController();
+  const pending = create({ page: "Note", content: "new" }, undefined, {
+    abortSignal: controller.signal,
+  });
+  await vi.waitFor(() => expect(approvalId).not.toBe(""));
+  controller.abort();
+  expect((await pending).success).toBe(false);
+  expect(writes).toEqual([]);
+});
+
+test("expected content is checked even when approvals are disabled", async () => {
+  aiSettings.chat.skipToolApproval = true;
+  expect(
+    (await requestWriteApproval("Note", "replacement", undefined, "stale"))
+      .success,
+  ).toBe(false);
+  expect(
+    (await requestWriteApproval("Note", "replacement", undefined, "original"))
+      .success,
+  ).toBe(true);
+  expect(writes).toEqual(["replacement"]);
+});
+
+test("native create and edit save approved content and reject read-only permissions", async () => {
+  const { buildWriteNoteTool } = await import("./note-tools.ts");
+  const permissions = {
+    allowedReadPaths: ["Note"],
+    allowedWritePaths: ["Note"],
+  };
+  const create = buildWriteNoteTool(true, requestWriteApproval).execute!;
+  const edit = buildWriteNoteTool(false, requestWriteApproval).execute!;
+  page = null;
+  const creating = create(
+    { page: "Note", content: "first line\nsecond line" },
+    permissions,
+  );
+  await vi.waitFor(() => expect(approvalId).not.toBe(""));
+  await submitApproval("write", approvalId, true);
+  expect((await creating).success).toBe(true);
+  expect(
+    (
+      await edit(
+        { page: "Note", oldText: "first", newText: "changed" },
+        { ...permissions, readOnly: true },
+      )
+    ).success,
+  ).toBe(false);
+  approvalId = "";
+  const editing = edit(
+    { page: "Note", oldText: "first", newText: "changed" },
+    permissions,
+  );
+  await vi.waitFor(() => expect(approvalId).not.toBe(""));
+  await submitApproval("write", approvalId, true);
+  expect((await editing).success).toBe(true);
+  expect(writes).toEqual([
+    "first line\nsecond line",
+    "changed line\nsecond line",
+  ]);
+});
