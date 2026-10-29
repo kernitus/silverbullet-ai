@@ -19,7 +19,7 @@ they invoke plug functions directly via Lua over HTTP.
    Runtime API uses a headless Chromium to host the live SilverBullet client.
 
 3. **Built plug**: `silverbullet-ai.plug.js` and `dist/silverbullet-ai-library.md`
-   must exist in the repo root. Run `npm run dist` if they don't.
+   must exist in the repo root. Run `bun run dist` if they don't.
 
 4. **OpenRouter API key**: set `OPENROUTER_API_KEY` in your environment. Get one
    at https://openrouter.ai/. The tests use `anthropic/claude-3.5-haiku` (a
@@ -29,20 +29,20 @@ they invoke plug functions directly via Lua over HTTP.
 5. **MCP test server dependencies**: the MCP tests spawn a small real MCP server
    from `mcp-test-server/`. Install its dependencies once:
    ```bash
-   npm install --prefix integration-tests/mcp-test-server
+   bun install --cwd integration-tests/mcp-test-server
    ```
 
 6. **MCP bridge dependencies**: `mcp-bridge.test.ts` runs the `silverbullet-ai-mcp`
    bridge from `mcp-bridge/`. Install its dependencies once:
    ```bash
-   npm install --prefix mcp-bridge
+   bun install --cwd mcp-bridge
    ```
 
 ## Running
 
 ```bash
 export OPENROUTER_API_KEY=sk-or-...
-npm run test:integration
+bun run test:integration
 ```
 
 Useful env vars:

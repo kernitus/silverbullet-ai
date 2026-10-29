@@ -48,10 +48,9 @@ function request(method: string, params: unknown = {}): Promise<any> {
 beforeAll(async () => {
   const bridgeDir = join(REPO_ROOT, "mcp-bridge");
   if (!existsSync(join(bridgeDir, "node_modules"))) {
-    throw new Error("MCP bridge deps missing; run: npm install --prefix mcp-bridge");
+    throw new Error("MCP bridge deps missing; run: bun install --cwd mcp-bridge");
   }
-  const tsxBin = join(REPO_ROOT, "node_modules", ".bin", "tsx");
-  proc = spawn(tsxBin, ["mcp-bridge/index.ts"], {
+  proc = spawn("bun", ["mcp-bridge/index.ts"], {
     cwd: REPO_ROOT,
     env: { ...process.env, SB_URL: baseUrl(), MCP_PORT: "" },
     stdio: ["pipe", "pipe", "inherit"],

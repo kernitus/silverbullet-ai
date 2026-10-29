@@ -97,13 +97,13 @@ export default async function globalSetup() {
   // 1. MCP test server
   const mcpPort = await getFreePort();
   const mcpUrl = `http://127.0.0.1:${mcpPort}/mcp`;
-  const tsxBin = join(MCP_SERVER_DIR, "node_modules", ".bin", "tsx");
-  if (!existsSync(tsxBin)) {
+  const dependenciesDir = join(MCP_SERVER_DIR, "node_modules", "@modelcontextprotocol", "sdk");
+  if (!existsSync(dependenciesDir)) {
     throw new Error(
-      `MCP test server dependencies missing; run: npm install --prefix ${MCP_SERVER_DIR}`,
+      `MCP test server dependencies missing; run: bun install --cwd ${MCP_SERVER_DIR}`,
     );
   }
-  const mcpProc = spawn(tsxBin, ["server.ts"], {
+  const mcpProc = spawn("bun", ["server.ts"], {
     cwd: MCP_SERVER_DIR,
     env: { ...process.env, PORT: String(mcpPort), MCP_JSON_RESPONSE: "1" },
     stdio: ["ignore", "pipe", "pipe"],

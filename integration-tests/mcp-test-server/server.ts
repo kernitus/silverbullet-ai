@@ -2,7 +2,7 @@
  * Minimal hello-world MCP server over the Streamable HTTP transport.
  *
  * Used as a real (non-mocked) server to exercise the silverbullet-ai MCP client
- * end to end. It is deliberately tiny and lives in its own npm package so the
+ * end to end. It is deliberately tiny and lives in its own package so the
  * `@modelcontextprotocol/sdk` dependency never leaks into the plug bundle.
  *
  * Tools:

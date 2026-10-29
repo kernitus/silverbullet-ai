@@ -1,16 +1,16 @@
 ## Build
 
-To build this plug, make sure you have [Node.js](https://nodejs.org/) (v18 or later) and npm installed. Then install dependencies and build:
+To build this plug, make sure you have [Node.js](https://nodejs.org/) (v18 or later) and bun install --frozen-lockfileed. Then install dependencies and build:
 
 ```shell
-npm install
-npm run build
+bun install --frozen-lockfile
+bun run build
 ```
 
 This compiles the plug to `silverbullet-ai.plug.js`. Copy it into your space's `_plug` folder:
 
 ```shell
-npm run build && cp silverbullet-ai.plug.js /my/space/_plug/
+bun run build && cp silverbullet-ai.plug.js /my/space/_plug/
 ```
 
 SilverBullet will automatically sync and load the new version of the plug (or speed up this process by running the {[Sync: Now]} command).
@@ -20,7 +20,7 @@ SilverBullet will automatically sync and load the new version of the plug (or sp
 To generate a full distribution (plug + combined Space Lua library):
 
 ```shell
-npm run dist
+bun run dist
 ```
 
 This creates the following files in `dist/`:
@@ -30,6 +30,11 @@ This creates the following files in `dist/`:
 
 Copy `silverbullet-ai-library.md` to your space root so SilverBullet can load the Space Lua functions.
 
+Bun runs the existing SilverBullet `plug-compile` compiler, so the output remains a
+SilverBullet browser plug. Use `bun run test` to run the Vitest suite; `bun test`
+selects Bun's separate test runner. CI uses the version in `.bun-version` and
+installs dependencies from `bun.lock` with `--frozen-lockfile`.
+
 ## Testing
 
 ### Unit Tests
@@ -37,7 +42,7 @@ Copy `silverbullet-ai-library.md` to your space root so SilverBullet can load th
 Run unit tests with vitest:
 
 ```shell
-npm test
+bun run test
 ```
 
 ### E2E Tests (Browser Testing)
@@ -50,8 +55,8 @@ First-time setup requires installing dependencies and Playwright browsers:
 
 ```shell
 cd e2e-tests
-npm install
-npx playwright install
+bun install --frozen-lockfile
+bunx playwright install
 ```
 
 #### Running E2E Tests
@@ -60,27 +65,27 @@ Run all E2E tests:
 
 ```shell
 cd e2e-tests
-npx playwright test
+bunx playwright test
 ```
 
 Run tests with interactive UI:
 
 ```shell
-npx playwright test --ui
+bunx playwright test --ui
 ```
 
 Run tests in headed mode (see the browser):
 
 ```shell
-npx playwright test --headed
+bunx playwright test --headed
 ```
 
 Run specific browser:
 
 ```shell
-npx playwright test --project=chromium
-npx playwright test --project=firefox
-npx playwright test --project="Mobile Chrome"
+bunx playwright test --project=chromium
+bunx playwright test --project=firefox
+bunx playwright test --project="Mobile Chrome"
 ```
 
 #### Test Structure

@@ -6,7 +6,7 @@ This directory contains end-to-end browser tests for the SilverBullet AI plugin 
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18 or later) and npm installed
+- [Node.js](https://nodejs.org/) (v18 or later) and bun install --frozen-lockfileed
 - SilverBullet CLI installed globally
 
 ### Install Dependencies and Playwright Browsers
@@ -14,8 +14,8 @@ This directory contains end-to-end browser tests for the SilverBullet AI plugin 
 Before running tests for the first time, install dependencies and Playwright browsers:
 
 ```bash
-npm install
-npx playwright install
+bun install --frozen-lockfile
+bunx playwright install
 ```
 
 This will download Chromium, Firefox, and WebKit browsers.
@@ -25,38 +25,38 @@ This will download Chromium, Firefox, and WebKit browsers.
 ### Run all tests
 
 ```bash
-npx playwright test
+bunx playwright test
 ```
 
 ### Run tests in UI mode (interactive)
 
 ```bash
-npx playwright test --ui
+bunx playwright test --ui
 ```
 
 ### Run tests in a specific browser
 
 ```bash
 # Chromium only
-npx playwright test --project=chromium
+bunx playwright test --project=chromium
 
 # Firefox only
-npx playwright test --project=firefox
+bunx playwright test --project=firefox
 
 # Mobile Chrome
-npx playwright test --project="Mobile Chrome"
+bunx playwright test --project="Mobile Chrome"
 ```
 
 ### Run tests in headed mode (see the browser)
 
 ```bash
-npx playwright test --headed
+bunx playwright test --headed
 ```
 
 ### Run specific test file
 
 ```bash
-npx playwright test tests/chat-panel.spec.ts
+bunx playwright test tests/chat-panel.spec.ts
 ```
 
 ## Test Structure
@@ -89,7 +89,7 @@ test("my test", async ({ page }) => {
 After running tests, you can view the HTML report:
 
 ```bash
-npx playwright show-report
+bunx playwright show-report
 ```
 
 ## CI/CD Integration
@@ -103,7 +103,7 @@ E2E tests are configured to run in GitHub Actions on every push and pull request
 Run tests in debug mode with Playwright Inspector:
 
 ```bash
-npx playwright test --debug
+bunx playwright test --debug
 ```
 
 ### Screenshots and Videos
@@ -111,7 +111,7 @@ npx playwright test --debug
 On test failure, Playwright automatically captures:
 - Screenshots (in `test-results/`)
 - Videos (in `test-results/`)
-- Traces (viewable with `npx playwright show-trace`)
+- Traces (viewable with `bunx playwright show-trace`)
 
 ## Troubleshooting
 
@@ -120,7 +120,7 @@ On test failure, Playwright automatically captures:
 If the test web server fails to start:
 
 1. Check that port 3000 is available
-2. Ensure SilverBullet is installed: `npm install -g silverbullet`
+2. Ensure SilverBullet is installed: `bun add --global silverbullet`
 3. Manually test: `silverbullet ./test-space --port 3000`
 
 ### Tests timing out
@@ -138,7 +138,7 @@ use: {
 Reinstall browsers:
 
 ```bash
-npx playwright install --force
+bunx playwright install --force
 ```
 
 ## Resources

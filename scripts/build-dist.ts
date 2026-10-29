@@ -31,8 +31,7 @@ function normalizeVersion(version: string): string {
 }
 
 async function getVersion(): Promise<string> {
-  const envVersion = process.env.PLUG_VERSION || process.env.RELEASE_VERSION ||
-    process.env.npm_package_version;
+  const envVersion = process.env.PLUG_VERSION || process.env.RELEASE_VERSION;
   if (envVersion) return normalizeVersion(envVersion);
 
   try {

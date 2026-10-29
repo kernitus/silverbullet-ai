@@ -30,13 +30,13 @@ The bridge lives in the [`mcp-bridge/`](https://github.com/justyns/silverbullet-
 `SB_URL=desktop` connects to the SilverBullet+ desktop app instead of a server:
 
 ```bash
-claude mcp add silverbullet --env SB_URL=desktop -- npx -y silverbullet-ai-mcp
+claude mcp add silverbullet --env SB_URL=desktop -- bunx silverbullet-ai-mcp
 ```
 
 ## Claude Code
 
 ```bash
-claude mcp add silverbullet --env SB_URL=http://localhost:3000 -- npx -y silverbullet-ai-mcp
+claude mcp add silverbullet --env SB_URL=http://localhost:3000 -- bunx silverbullet-ai-mcp
 ```
 
 ## Claude Desktop
@@ -47,8 +47,8 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "silverbullet": {
-      "command": "npx",
-      "args": ["-y", "silverbullet-ai-mcp"],
+      "command": "bunx",
+      "args": ["silverbullet-ai-mcp"],
       "env": { "SB_URL": "http://localhost:3000" }
     }
   }
@@ -60,7 +60,7 @@ Add to `claude_desktop_config.json`:
 Set `MCP_PORT` to run as a streamable HTTP server (e.g. as a sidecar next to SilverBullet) instead of stdio:
 
 ```bash
-SB_URL=http://localhost:3000 MCP_PORT=3033 MCP_TOKEN=secret npx -y silverbullet-ai-mcp
+SB_URL=http://localhost:3000 MCP_PORT=3033 MCP_TOKEN=secret bunx silverbullet-ai-mcp
 ```
 
 Point streamable-HTTP clients at `http://host:3033/mcp` and set `Authorization: Bearer secret`.

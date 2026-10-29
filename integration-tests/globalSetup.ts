@@ -138,13 +138,13 @@ function waitForExit(proc: ChildProcess, timeoutMs: number): Promise<boolean> {
 async function startMcpServer(): Promise<{ proc: ChildProcess; url: string }> {
   const port = await getFreePort();
   const url = `http://127.0.0.1:${port}/mcp`;
-  const tsxBin = join(MCP_SERVER_DIR, "node_modules", ".bin", "tsx");
-  if (!existsSync(tsxBin)) {
+  const dependenciesDir = join(MCP_SERVER_DIR, "node_modules", "@modelcontextprotocol", "sdk");
+  if (!existsSync(dependenciesDir)) {
     throw new Error(
-      `MCP test server dependencies missing; run: npm install --prefix ${MCP_SERVER_DIR}`,
+      `MCP test server dependencies missing; run: bun install --cwd ${MCP_SERVER_DIR}`,
     );
   }
-  const proc = spawn(tsxBin, ["server.ts"], {
+  const proc = spawn("bun", ["server.ts"], {
     cwd: MCP_SERVER_DIR,
     env: { ...process.env, PORT: String(port), MCP_JSON_RESPONSE: "1" },
     stdio: ["ignore", "pipe", "pipe"],

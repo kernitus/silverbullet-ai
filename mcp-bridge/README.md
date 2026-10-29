@@ -15,7 +15,7 @@ Full docs: https://ai.silverbullet.md/MCP%20Server/
 Claude Code:
 
 ```bash
-claude mcp add silverbullet --env SB_URL=http://localhost:3000 -- npx -y silverbullet-ai-mcp
+claude mcp add silverbullet --env SB_URL=http://localhost:3000 -- bunx silverbullet-ai-mcp
 ```
 
 Claude Desktop (`claude_desktop_config.json`):
@@ -24,8 +24,8 @@ Claude Desktop (`claude_desktop_config.json`):
 {
   "mcpServers": {
     "silverbullet": {
-      "command": "npx",
-      "args": ["-y", "silverbullet-ai-mcp"],
+      "command": "bunx",
+      "args": ["silverbullet-ai-mcp"],
       "env": { "SB_URL": "http://localhost:3000" }
     }
   }

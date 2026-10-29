@@ -257,14 +257,14 @@ Run `AI: Execute AI Prompt from Custom Template` to use your templates.
 ## Build
 
 ```shell
-npm install
-npm run build
+bun install --frozen-lockfile
+bun run build
 ```
 
 Copy the resulting `.plug.js` file into your space's `_plug` folder:
 
 ```shell
-npm run build && cp *.plug.js /my/space/_plug/
+bun run build && cp *.plug.js /my/space/_plug/
 ```
 
 ## Installation

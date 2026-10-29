@@ -7,13 +7,17 @@
     "test": "tests"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "test:mcp": "playwright test -c playwright.config.mcp.ts"
+    "test": "bun run --bun playwright test",
+    "test:mcp": "bun run --bun playwright test -c playwright.config.mcp.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.58.2"
+  },
+  "packageManager": "bun@1.4.4",
+  "engines": {
+    "bun": ">=1.4.4"
   }
 }

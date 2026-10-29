@@ -17,11 +17,12 @@
     "dist"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "bun": ">=1.4.4"
   },
   "scripts": {
-    "build": "tsc",
-    "prepublishOnly": "npm run build"
+    "build": "bun run --bun tsc",
+    "prepublishOnly": "bun run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.1"
@@ -29,5 +30,6 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "packageManager": "bun@1.4.4"
 }
