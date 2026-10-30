@@ -120,6 +120,7 @@ try {
       });
     };
 
+    (globalThis as any).pushUpdate = pushUpdate;
     (globalThis as any).syscall = async (name: string, ...args: unknown[]) => {
       if (name === "clientStore.get") return store[String(args[0])];
       if (name === "clientStore.set") {
@@ -201,6 +202,7 @@ try {
                   chunks: [],
                   status: "streaming",
                   statusMessage: "Research: read_note Public/Notes",
+                  preview: (globalThis as any).testPreview,
                   instructions: (globalThis as any).instruction
                     ? [(globalThis as any).instruction]
                     : [],
@@ -300,6 +302,18 @@ try {
     await panel.getByText("Private reasoning", { exact: true }).count(),
     0,
   );
+  assert.equal(await panel.locator(".tool-activity").count(), 1);
+  assert.equal(await panel.locator(".tool-call").count(), 1);
+  assert.equal(
+    await panel
+      .locator(".tool-activity")
+      .evaluate((element: HTMLDetailsElement) => element.open),
+    false,
+  );
+  assert.match(
+    (await panel.locator(".tool-call").textContent()) || "",
+    /Arguments.*Result/s,
+  );
   await panel.locator("#attach-page").check();
   await panel.locator("#user-input").fill("Continue");
   await panel.locator("#send-btn").click();
@@ -338,6 +352,70 @@ try {
       .getElementById("run-instructions")
       ?.textContent?.includes("Queued for the next step"),
   );
+  await panel.evaluate(async () => {
+    (globalThis as any).testPreview = {
+      parts: [
+        {
+          type: "tool-search_notes",
+          toolCallId: "live-a",
+          state: "output-available",
+          input: { query: "college" },
+          output: "Found notes",
+        },
+        {
+          type: "tool-read_note",
+          toolCallId: "live-b",
+          state: "input-available",
+          input: { page: "College/<script>" },
+        },
+      ],
+    };
+    await (globalThis as any).pushUpdate();
+  });
+  await panel.waitForFunction(
+    () => document.querySelectorAll(".tool-call").length === 3,
+  );
+  const liveTools = panel.locator(".tool-activity").last();
+  assert.equal(
+    await liveTools.evaluate((element: HTMLDetailsElement) => element.open),
+    true,
+  );
+  await panel.evaluate(async () => {
+    (globalThis as any).testPreview.parts[1].state = "output-available";
+    (globalThis as any).testPreview.parts[1].output =
+      "<img src=x onerror=alert(1)>";
+    (globalThis as any).testPreview.parts.push({
+      type: "text",
+      text: "Here are the relevant notes.",
+    });
+    await (globalThis as any).pushUpdate();
+  });
+  await panel.waitForFunction(() =>
+    document
+      .querySelector(".message.streaming")
+      ?.textContent?.includes("relevant notes"),
+  );
+  assert.equal(
+    await liveTools.evaluate((element: HTMLDetailsElement) => element.open),
+    false,
+  );
+  assert.equal(await liveTools.locator("img, script").count(), 0);
+  await liveTools.locator(":scope > summary").click();
+  await panel.evaluate(async () => {
+    (globalThis as any).testPreview.parts.at(-1).text += " More text.";
+    await (globalThis as any).pushUpdate();
+  });
+  await panel.waitForFunction(() =>
+    document
+      .querySelector(".message.streaming")
+      ?.textContent?.includes("More text"),
+  );
+  assert.equal(
+    await liveTools.evaluate((element: HTMLDetailsElement) => element.open),
+    true,
+  );
+  assert.equal(await liveTools.locator(".tool-call").count(), 2);
+  assert.equal(await panel.locator("#run-progress").isVisible(), false);
   await panel.evaluate(() => {
     (globalThis as any).rejectInstruction = true;
   });

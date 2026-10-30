@@ -63,6 +63,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   let isStreaming = false;
   let instructionError = "";
   let liveMessageEl;
+  let liveActivity;
   let pushChannel;
   let connecting = Promise.resolve();
   let lastPreview;
@@ -388,8 +389,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       .map((part) => {
         if (part.type === "text") return part.text;
         if (part.type === "reasoning" && lastReasoningEnabled) return part.text;
-        if (part.type === "tool-call") return `**Tool: ${part.toolName}**`;
-        if (part.type === "tool-result") return `Tool result: ${part.toolName}`;
         if (part.type === "image") return "[Image attachment]";
         if (part.type === "file")
           return `[File: ${part.filename || part.mediaType}]`;
@@ -399,52 +398,176 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       .join("\n\n");
   }
 
+  function createActivity(open = false) {
+    const element = document.createElement("details");
+    element.className = "tool-activity";
+    element.open = open;
+    const heading = document.createElement("summary");
+    const rows = document.createElement("div");
+    rows.className = "tool-activity-rows";
+    element.append(heading, rows);
+    messagesContainer.appendChild(element);
+    return {
+      element,
+      heading,
+      rows,
+      calls: new Map(),
+      collapsedForAnswer: false,
+    };
+  }
+
+  function updateActivity(activity, part) {
+    const id = part.toolCallId;
+    if (!id) return;
+    let call = activity.calls.get(id);
+    if (!call) {
+      const element = document.createElement("details");
+      element.className = "tool-call";
+      const heading = document.createElement("summary");
+      const label = document.createElement("span");
+      label.className = "tool-call-label";
+      const status = document.createElement("span");
+      status.className = "tool-call-status";
+      heading.append(label, status);
+      element.append(heading);
+      activity.rows.append(element);
+      call = { element, label, status, sections: new Map() };
+      activity.calls.set(id, call);
+    }
+    const name = part.toolName || part.type.replace(/^tool-/, "");
+    const names = {
+      search_notes: "Search notes",
+      read_note: "Read note",
+      research_notes: "Research notes",
+      write_note: "Write note",
+    };
+    const input = part.input;
+    const hint = input?.query || input?.page || input?.path || input?.pageName;
+    if (part.type !== "tool-result" || !call.label.textContent)
+      call.label.textContent = `${names[name] || name.replaceAll("_", " ")}${typeof hint === "string" ? `: ${hint}` : ""}`;
+    const hasOutput =
+      part.type === "tool-result" || part.state === "output-available";
+    const failed =
+      part.state === "output-error" ||
+      part.output?.type === "error-text" ||
+      part.output?.type === "error-json";
+    const denied = part.state === "output-denied";
+    call.status.textContent = failed
+      ? "Failed"
+      : denied
+        ? "Denied"
+        : hasOutput
+          ? "Done"
+          : part.state === "input-streaming"
+            ? "Preparing"
+            : "Running";
+    call.pending = !hasOutput && !failed && !denied;
+    call.element.dataset.state = failed
+      ? "error"
+      : call.pending
+        ? "running"
+        : "done";
+    for (const [title, value] of [
+      ["Arguments", input],
+      ["Result", part.output],
+      ["Error", part.errorText],
+    ]) {
+      if (value === undefined) continue;
+      let pre = call.sections.get(title);
+      if (!pre) {
+        const section = document.createElement("div");
+        section.className = "tool-call-section";
+        const label = document.createElement("strong");
+        label.textContent = title;
+        pre = document.createElement("pre");
+        section.append(label, pre);
+        call.element.append(section);
+        call.sections.set(title, pre);
+      }
+      const text =
+        typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      if (pre.textContent !== text) pre.textContent = text;
+    }
+    const pending = [...activity.calls.values()].filter(
+      (call) => call.pending,
+    ).length;
+    const count = activity.calls.size;
+    activity.heading.textContent = pending
+      ? `Using tools · ${pending} running · ${count} total`
+      : `Tools used · ${count}`;
+  }
+
   async function renderAllMessages() {
     messagesContainer.innerHTML = "";
-
+    liveActivity = undefined;
     if (chatHistory.length === 0) {
       messagesContainer.innerHTML = `
         <div class="empty-state" id="empty-state">
           <h4>Start a conversation</h4>
-          <p>Ask anything about your notes or something.</p>
+          <p>Ask a question or explore your notes.</p>
         </div>
       `;
       return;
     }
-
-    for (const msg of chatHistory) {
-      if (msg.role !== "system") {
-        const content = messageText(msg);
-        if (content) {
-          const element = await renderMessage(
-            msg.role === "tool" ? "assistant" : msg.role,
-            content,
-          );
-          if (Array.isArray(msg.content))
-            for (const part of msg.content) {
-              if (part.type !== "tool-result" && part.type !== "tool-call")
-                continue;
-              const details = document.createElement("details");
-              const summary = document.createElement("summary");
-              summary.textContent =
-                part.type === "tool-call" ? "Arguments" : "Result";
-              const pre = document.createElement("pre");
-              pre.textContent = JSON.stringify(
-                part.type === "tool-call" ? part.input : part.output,
-                null,
-                2,
-              );
-              details.append(summary, pre);
-              element.appendChild(details);
-            }
-        }
+    let activity;
+    const finishActivity = () => {
+      if (!activity) return;
+      for (const call of activity.calls.values()) {
+        if (call.pending) call.status.textContent = "Incomplete";
       }
+      activity.heading.textContent = `Tools used · ${activity.calls.size}`;
+    };
+    for (const msg of chatHistory) {
+      if (msg.role === "system") continue;
+      if (msg.role === "user") {
+        finishActivity();
+        activity = undefined;
+      }
+      if (Array.isArray(msg.content))
+        for (const part of msg.content) {
+          if (part.type !== "tool-call" && part.type !== "tool-result")
+            continue;
+          activity ??= createActivity();
+          updateActivity(activity, part);
+        }
+      const content = messageText(msg);
+      if (content)
+        await renderMessage(
+          msg.role === "tool" ? "assistant" : msg.role,
+          content,
+        );
     }
+    finishActivity();
   }
 
   function renderLivePreview(preview) {
     lastPreview = preview;
     if (!liveMessageEl || !preview) return;
+    for (const part of preview.parts) {
+      if (part.type !== "dynamic-tool" && !part.type.startsWith("tool-"))
+        continue;
+      if (!liveActivity) {
+        liveActivity = createActivity(true);
+        liveMessageEl.before(liveActivity.element);
+      }
+      updateActivity(liveActivity, part);
+    }
+    const lastPart = preview.parts.findLast(
+      (part) =>
+        part.type === "text" ||
+        part.type === "dynamic-tool" ||
+        part.type.startsWith("tool-"),
+    );
+    const answering = lastPart?.type === "text" && !!lastPart.text.trim();
+    if (
+      answering &&
+      liveActivity &&
+      !liveActivity.collapsedForAnswer &&
+      ![...liveActivity.calls.values()].some((call) => call.pending)
+    ) {
+      liveActivity.element.open = false;
+      liveActivity.collapsedForAnswer = true;
+    }
     liveMessageEl.textContent = preview.parts
       .map((part) => {
         if (part.type === "text") return part.text;
@@ -454,6 +577,9 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       })
       .filter(Boolean)
       .join("\n\n");
+    liveMessageEl.hidden = !liveMessageEl.textContent;
+    if (answering && !document.getElementById("run-progress").dataset.limited)
+      document.getElementById("run-progress").hidden = true;
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
@@ -461,6 +587,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
     isStreaming = false;
     currentStreamId = null;
     liveMessageEl = undefined;
+    liveActivity = undefined;
     lastPreview = undefined;
     document.getElementById("run-progress").hidden = true;
     stopBtn.hidden = true;
@@ -486,6 +613,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       return;
     renderInstructions(run.instructions);
     const progress = document.getElementById("run-progress");
+    progress.dataset.limited = run.previewLimited ? "true" : "";
     progress.hidden = !run.statusMessage && !run.previewLimited;
     progress.textContent = run.previewLimited
       ? "Live preview limit reached. The run continues; its complete response will appear when it finishes."
