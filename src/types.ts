@@ -1,3 +1,4 @@
+import type { PathRule } from "./chat-scope.ts";
 import type { ModelMessage, ToolCallPart } from "ai";
 export type ProviderOptions = NonNullable<ToolCallPart["providerOptions"]>;
 import { ObjectValue } from "@silverbulletmd/silverbullet/type/index";
@@ -194,8 +195,8 @@ export type AIAgentTemplate = {
     toolsExclude?: string[];
     inheritBasePrompt?: boolean;
     allowUnsafeLua?: boolean;
-    allowedReadPaths?: string[];
-    allowedWritePaths?: string[];
+    allowedReadPaths?: PathRule[];
+    allowedWritePaths?: PathRule[];
   };
 };
 
@@ -207,8 +208,8 @@ export type ToolExecutionContext = {
 export type PathPermissions = {
   allowUnsafeLua?: boolean;
   readOnly?: boolean;
-  allowedReadPaths?: string[];
-  allowedWritePaths?: string[];
+  allowedReadPaths?: PathRule[];
+  allowedWritePaths?: PathRule[];
 };
 
 export enum Provider {

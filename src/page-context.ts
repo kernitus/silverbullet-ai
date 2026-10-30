@@ -1,8 +1,9 @@
+import type { PathRule } from "./chat-scope.ts";
 import { editor } from "@silverbulletmd/silverbullet/syscalls";
 import { isPathAllowed } from "./utils.ts";
 
 export async function currentPageContext(
-  allowedReadPaths?: string[],
+  allowedReadPaths?: PathRule[],
   attachPage = false,
 ): Promise<{
   text: string;

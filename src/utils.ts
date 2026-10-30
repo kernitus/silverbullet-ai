@@ -1,3 +1,4 @@
+import type { PathRule } from "./chat-scope.ts";
 import {
   editor,
   events,
@@ -45,12 +46,16 @@ export const log: {
 
 export function isPathAllowed(
   page: string,
-  allowedPaths: string[] | undefined,
+  allowedPaths: PathRule[] | undefined,
 ): boolean {
   if (page.split("/").some((segment) => segment === "." || segment === ".."))
     return false;
   if (allowedPaths === undefined) return true;
   return allowedPaths.some((path) => {
+    if (typeof path !== "string") {
+      if ("exact" in path) return page === path.exact;
+      return path.folder === "" || page.startsWith(`${path.folder}/`);
+    }
     const prefix = path.replace(/\/+$/, "");
     return page === prefix || page.startsWith(`${prefix}/`);
   });

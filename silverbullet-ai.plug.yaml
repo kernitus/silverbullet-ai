@@ -143,6 +143,14 @@ functions:
     command:
       name: "AI: Run Benchmark"
   # AI Assistant Panel
+  chatWithCurrentNote:
+    path: src/chat-panel.ts:chatWithCurrentNote
+    command:
+      name: "AI: Chat with Current Note"
+  chatWithFolder:
+    path: src/chat-panel.ts:chatWithFolder
+    command:
+      name: "AI: Chat with Folder"
   openAIAssistant:
     path: src/chat-panel.ts:openAIAssistant
     command:

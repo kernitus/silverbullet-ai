@@ -4,6 +4,14 @@ Agents are customizable personas that configure how the Assistant behaves. Each 
 
 Currently, Agents are only used in the Assistant chat panel.
 
+## Chat with one note or folder
+
+Use **AI: Chat with Current Note** or **AI: Chat with Folder** from the command palette. The folder command provides a searchable picker of folders containing notes. Each command starts a fresh conversation using the standard assistant without creating or changing an agent definition.
+
+The panel displays the note or folder. Note scope matches exactly one note, excluding child notes. Folder scope includes notes in that folder and its subfolders, but excludes similarly named folders. The scope stays fixed when you navigate and is restored when you reopen the panel. Reads, searches, edits and research subagents inherit the restrictions. Unrestricted Lua, custom Lua tools and MCP tools are unavailable in scoped chats.
+
+Use **New** in the panel to return to a normal chat and your configured agent. Stop any running turn before opening another scoped chat. **Attach current page** only includes content when the current page is inside the scope.
+
 ## Configuration
 
 ### Setting a Default Agent

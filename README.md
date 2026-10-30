@@ -60,6 +60,8 @@ Shows progress notifications during the operation.
 Doesn't use the queue
 - **AI: Connectivity Test**: Command to run connectivity tests (including any configured MCP servers) and navigate to the results page.
 - **AI: Run Benchmark**: Runs the AI benchmark suite and navigates to the results page.
+- **AI: Chat with Current Note**: Starts a fresh chat restricted to exactly the open note.
+- **AI: Chat with Folder**: Opens a folder picker, then starts a fresh chat restricted to that folder and its subfolders.
 - **AI: Open Assistant**: Opens the AI Assistant panel (side panel)
 - **AI: Open Assistant (Full Screen)**: Opens the AI Assistant as a full-screen modal (better for mobile)
 - **AI: Toggle Assistant Panel**: Toggles the AI Assistant panel
@@ -75,6 +77,8 @@ The assistant panel stores conversations as Vercel AI SDK `ModelMessage` arrays 
 To use your ChatGPT account’s Codex allowance, configure the [Codex account service](docs/Codex.md), then run **AI: Sign in to Codex Account**. The model picker discovers models available to that account.
 
 The panel supports Stop, recovery from completed SDK steps and instructions during an active run. Use **Send instruction** to queue text for the next step; the panel shows whether it was delivered. Page content is included when you select **Attach current page**; otherwise the agent can use `read_note`. Native `create_note` and `edit_note` tools support restricted agents and preview changes before approval. Long conversations use bounded tool output and SDK-backed summarisation. The `research_notes` tool delegates read-only research with inherited note permissions, displays search and read progress, and saves completed findings for recovery after interruption. Arbitrary Lua requires `allowUnsafeLua = true` and is unavailable to path-restricted agents. See [agent capabilities](docs/Agents.md) and [execution and context settings](docs/Development.md).
+
+To focus a conversation, run **AI: Chat with Current Note** or **AI: Chat with Folder** from the command palette. No agent configuration is needed. The panel shows the scope, which stays fixed when you navigate between notes. These commands start a fresh conversation using the standard assistant, with reads, searches and edits restricted to the selected scope. **New** returns to a normal unscoped chat with your configured agent. Stop an active run before switching scope.
 
 ### Configuration
 

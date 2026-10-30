@@ -1,3 +1,4 @@
+import { type ChatScope, noteFolders, scopePermissions } from "./chat-scope.ts";
 import { experimental_createSteering, type UIMessage } from "ai";
 import { createPanelPush } from "./panel-push.ts";
 import { currentPageContext } from "./page-context.ts";
@@ -203,6 +204,52 @@ export async function openAIAssistant() {
   await clientStore.set(PANEL_STATE_KEY, true);
 }
 
+/** Start a fresh conversation without changing saved agent definitions. */
+async function openScopedChat(chatScope: ChatScope): Promise<void> {
+  if (
+    panelStarting ||
+    [...streamBuffers.values()].some((buffer) => buffer.status === "streaming")
+  )
+    throw new Error("Stop the running chat before opening a scoped chat.");
+  panelStarting = true;
+  try {
+    await clearPanelHistory(crypto.randomUUID(), chatScope);
+    clearTimeout(expiryTimer);
+    expiryTimer = undefined;
+    streamBuffers.clear();
+    latestRunId = undefined;
+    await closeAIAssistant();
+    await openAIAssistant();
+  } finally {
+    panelStarting = false;
+  }
+}
+
+export async function chatWithCurrentNote(): Promise<void> {
+  const path = await editor.getCurrentPage();
+  if (!path) throw new Error("Open a note first.");
+  await openScopedChat({ kind: "note", path });
+}
+
+export async function chatWithFolder(): Promise<void> {
+  const folders = noteFolders(await space.listPages());
+  if (!folders.length) {
+    await editor.flashNotification(
+      "No note folders found. Use AI: Chat with Current Note for a root-level note.",
+    );
+    return;
+  }
+  const selected = await editor.filterBox(
+    "Chat with Folder",
+    folders.map((path) => ({ name: path, path })),
+    "Choose a folder, including its subfolders",
+  );
+  if (!selected) return;
+  if (!folders.includes(selected.path))
+    throw new Error("Select a folder from the list.");
+  await openScopedChat({ kind: "folder", path: selected.path });
+}
+
 /**
  * Opens the AI Assistant as a full-screen modal (better for mobile)
  */
@@ -248,7 +295,7 @@ export async function toggleAIAssistant() {
  */
 export async function startPanelChat(
   messages: ChatMessage[],
-  chatId = crypto.randomUUID(),
+  chatId: string = crypto.randomUUID(),
   options: { attachPage?: boolean } = {},
 ): Promise<{
   streamId?: string;
@@ -268,6 +315,12 @@ export async function startPanelChat(
           "A chat is already running. Stop it before starting another turn.",
       };
     const stored = await getPanelChatHistory();
+    if (stored?.chatScope && stored.id !== chatId)
+      return {
+        error:
+          "This chat has changed. Reopen the panel before sending a message.",
+      };
+    const chatScope = stored?.id === chatId ? stored.chatScope : undefined;
     const lastInput = messages.at(-1);
     if (stored?.id === chatId && lastInput)
       messages = [...stored.messages, lastInput];
@@ -281,19 +334,23 @@ export async function startPanelChat(
     }
 
     await initChatAgent();
-    const chatAgent = currentChatAgent;
+    const chatAgent = chatScope ? null : currentChatAgent;
 
     streamId = `stream_${crypto.randomUUID()}`;
     const controller = new AbortController();
-    const permissions: PathPermissions = {
-      allowedReadPaths: chatAgent?.aiagent.allowedReadPaths,
-      allowedWritePaths: chatAgent?.aiagent.allowedWritePaths,
-      allowUnsafeLua:
-        chatAgent?.aiagent.allowUnsafeLua ?? aiSettings?.chat?.allowUnsafeLua,
-    };
+    const permissions: PathPermissions = chatScope
+      ? scopePermissions(chatScope)
+      : {
+          allowedReadPaths: chatAgent?.aiagent.allowedReadPaths,
+          allowedWritePaths: chatAgent?.aiagent.allowedWritePaths,
+          allowUnsafeLua:
+            chatAgent?.aiagent.allowUnsafeLua ??
+            aiSettings?.chat?.allowUnsafeLua,
+        };
 
     const scope = JSON.stringify({
       agent: chatAgent?.ref,
+      chatScope,
       read: permissions.allowedReadPaths,
       write: permissions.allowedWritePaths,
     });
@@ -345,10 +402,12 @@ export async function startPanelChat(
     let pageImageSource: { page: string; content: string } | undefined;
     try {
       const pageContext = await currentPageContext(
-        chatAgent?.aiagent?.allowedReadPaths,
+        permissions.allowedReadPaths,
         options.attachPage === true,
       );
       contextBlock = pageContext.text;
+      if (chatScope)
+        contextBlock += `\nChat scope: ${chatScope.kind} ${JSON.stringify(chatScope.path)}. Use read_note and search_notes within this scope. The scope stays fixed when the user navigates to another note.`;
       pageImageSource = pageContext.attachment;
       contextBlock += `\nCurrent date and time: ${new Date().toISOString()}`;
       if (chatAgent)
@@ -428,7 +487,7 @@ export async function startPanelChat(
               enabledKinds,
               handlerExts,
               seen,
-              chatAgent?.aiagent?.allowedReadPaths,
+              permissions.allowedReadPaths,
             );
             existing.push(...pageFiles);
           }
@@ -448,7 +507,14 @@ export async function startPanelChat(
       stored?.id === chatId && stored.scope === scope
         ? stored.compaction
         : undefined;
-    await beginPanelTurn(chatId, streamId, messages, scope, compaction);
+    await beginPanelTurn(
+      chatId,
+      streamId,
+      messages,
+      scope,
+      compaction,
+      chatScope,
+    );
     const runningId = streamId;
     panelPush.changed();
     runToolLoop(

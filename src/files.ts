@@ -1,3 +1,4 @@
+import type { PathRule } from "./chat-scope.ts";
 import {
   clientStore,
   markdown,
@@ -210,7 +211,7 @@ export async function resolveFileToAttachment(
   path: string,
   kinds: Set<AttachmentKind>,
   handlerExts: Set<string>,
-  allowedReadPaths?: string[],
+  allowedReadPaths?: PathRule[],
 ): Promise<Attachment | null> {
   if (!isPathAllowed(path, allowedReadPaths)) return null;
   const ext = extOf(path);
@@ -235,7 +236,7 @@ export async function extractFilesFromMarkdown(
   enabledKinds: Set<AttachmentKind>,
   handlerExts: Set<string>,
   seen: Set<string> = new Set(),
-  allowedReadPaths?: string[],
+  allowedReadPaths?: PathRule[],
 ): Promise<Attachment[]> {
   const attachments: Attachment[] = [];
 

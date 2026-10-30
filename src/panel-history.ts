@@ -1,3 +1,4 @@
+import type { ChatScope } from "./chat-scope.ts";
 import { clientStore } from "@silverbulletmd/silverbullet/syscalls";
 import type { ModelMessage } from "ai";
 import { interruptedMessages, type RunCheckpoint } from "./execution.ts";
@@ -14,6 +15,7 @@ export type PanelHistory = {
   id: string;
   messages: ModelMessage[];
   scope?: string;
+  chatScope?: ChatScope;
   compaction?: import("./context.ts").CompactionState;
   run?: {
     id: string;
@@ -38,12 +40,14 @@ export function beginPanelTurn(
   messages: ModelMessage[],
   scope?: string,
   compaction?: import("./context.ts").CompactionState,
+  chatScope?: ChatScope,
 ): Promise<void> {
   return serial(() =>
     clientStore.set(CHAT_HISTORY_KEY, {
       id,
       messages,
       scope,
+      chatScope,
       compaction,
       run: { id: runId, status: "streaming" },
     }),
@@ -114,8 +118,13 @@ export function loadPanelHistory(
     return stored;
   });
 }
-export function clearPanelHistory(id: string): Promise<void> {
-  return serial(() => clientStore.set(CHAT_HISTORY_KEY, { id, messages: [] }));
+export function clearPanelHistory(
+  id: string,
+  chatScope?: ChatScope,
+): Promise<void> {
+  return serial(() =>
+    clientStore.set(CHAT_HISTORY_KEY, { id, messages: [], chatScope }),
+  );
 }
 
 export function savePanelCompaction(

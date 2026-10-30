@@ -321,6 +321,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       );
       if (stored && stored.messages) {
         chatData = stored;
+        updateScopeIndicator();
         renderInstructions(stored.run?.instructions);
         chatHistory = stored.displayMessages ?? chatData.messages;
         await updateChatStatus();
@@ -345,7 +346,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
         resetRunControls();
         chatData = { id: generateChatId(), messages: [] };
       }
-      await updateChatStatus();
+      updateScopeIndicator();
+      await loadCurrentAgent();
     } catch (e) {
       console.error("Failed to load chat history:", e);
     }
@@ -704,6 +706,8 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
       id,
     );
     chatData = { id, messages: [] };
+    updateScopeIndicator();
+    await loadCurrentAgent();
     chatHistory = [];
     await saveHistory();
     await renderAllMessages();
@@ -734,8 +738,25 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
   let displayedAgentRef = undefined;
 
+  function updateScopeIndicator() {
+    const scope = chatData?.chatScope;
+    const label = document.getElementById("chat-scope-label");
+    label.hidden = !scope;
+    label.textContent = scope
+      ? `${scope.kind === "note" ? "Note" : "Folder"}: ${scope.path}`
+      : "";
+  }
+
   function updateAgentIndicator(agent) {
     displayedAgentRef = agent?.ref ?? null;
+    if (chatData?.chatScope) {
+      panelTitleEl.textContent = "Scoped Assistant";
+      panelTitleEl.title =
+        "Start a new chat to choose an agent or change scope";
+      clearAgentBtn.classList.add("hidden");
+      updateScopeIndicator();
+      return;
+    }
     if (agent && agent.aiagent) {
       const agentName =
         agent.aiagent.name || agent.ref.split("/").pop() || agent.ref;
@@ -893,6 +914,7 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
   reasoningIndicatorEl.addEventListener("click", toggleReasoning);
 
   panelTitleEl.addEventListener("click", async function () {
+    if (chatData?.chatScope) return;
     try {
       const agent = await syscall(
         "system.invokeFunction",
@@ -949,7 +971,6 @@ const CHAT_HISTORY_KEY = "ai.panelChatHistory.sdk.v1";
 
   void (async () => {
     await loadHistory();
-    await loadCurrentAgent();
     await connectPanel();
   })().catch((error) => {
     instructionError = error.message;

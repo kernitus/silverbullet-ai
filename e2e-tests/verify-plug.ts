@@ -52,6 +52,14 @@ try {
   assert.ok(manifest.functions.chat);
   assert.ok(manifest.functions.steerPanelChat);
   assert.ok(manifest.functions.connectPanelChat);
+  assert.equal(
+    manifest.functions.chatWithCurrentNote.command.name,
+    "AI: Chat with Current Note",
+  );
+  assert.equal(
+    manifest.functions.chatWithFolder.command.name,
+    "AI: Chat with Folder",
+  );
   assert.equal(manifest.functions.getPanelChatChunk, undefined);
   assert.equal(manifest.functions.getPollState, undefined);
   assert.ok(manifest.functions.streamChatOnPage);
@@ -60,11 +68,18 @@ try {
   );
 
   const panel = await browser.newPage();
-  await panel.route("http://localhost:9876/**", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><html><body></body></html>" }));
+  await panel.route("http://localhost:9876/**", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: "<!doctype html><html><body></body></html>",
+    }),
+  );
   await panel.goto("http://localhost:9876/");
   const panelErrors: string[] = [];
   panel.on("pageerror", (error) => panelErrors.push(error.message));
-  panel.on("console", (message) => { if (message.type() === "error") console.error("Panel:", message.text()); });
+  panel.on("console", (message) => {
+    if (message.type() === "error") console.error("Panel:", message.text());
+  });
   await panel.setContent(
     await readFile(
       new URL("../assets/chat-panel.html", import.meta.url),
@@ -250,11 +265,18 @@ try {
   });
   await panel.locator("#user-input").fill("Find my notes");
   await panel.locator("#send-btn").click();
-  await panel.waitForFunction(() =>
-    [...document.querySelectorAll(".message.assistant:not(.streaming)")].some(
-      (element) => element.textContent === "Search is available through tools.",
-    ),
-  ).catch(async (error) => { console.error(await panel.locator("body").innerText()); console.error(await panel.evaluate(() => (globalThis as any).testStore)); throw error; });
+  await panel
+    .waitForFunction(() =>
+      [...document.querySelectorAll(".message.assistant:not(.streaming)")].some(
+        (element) =>
+          element.textContent === "Search is available through tools.",
+      ),
+    )
+    .catch(async (error) => {
+      console.error(await panel.locator("body").innerText());
+      console.error(await panel.evaluate(() => (globalThis as any).testStore));
+      throw error;
+    });
   assert.equal(
     await panel
       .locator("#rag-indicator, #overflow-rag-btn, .rag-context")
@@ -347,6 +369,31 @@ try {
     /Not delivered/,
   );
   assert.equal(await panel.locator("#attach-page").isDisabled(), false);
+  await panel.evaluate(() => {
+    window.dispatchEvent(new Event("pagehide"));
+    (globalThis as any).testStore["ai.panelChatHistory.sdk.v1"] = {
+      id: "scoped-browser-chat",
+      messages: [],
+      chatScope: { kind: "note", path: "College/<Course>" },
+    };
+    const original = (globalThis as any).syscall;
+    (globalThis as any).syscall = async (name: string, ...args: any[]) => {
+      if (
+        name === "system.invokeFunction" &&
+        args[0] === "silverbullet-ai.connectPanelChat"
+      )
+        return { channel: `scope-${crypto.randomUUID()}` };
+      return original(name, ...args);
+    };
+    window.dispatchEvent(
+      new PageTransitionEvent("pageshow", { persisted: true }),
+    );
+  });
+  await panel.getByText("Note: College/<Course>", { exact: true }).waitFor();
+  assert.equal(await panel.locator("#chat-scope-label course").count(), 0);
+  await panel.getByText("Scoped Assistant", { exact: true }).waitFor();
+  await panel.locator("#new-chat-btn").click();
+  await panel.locator("#chat-scope-label").waitFor({ state: "hidden" });
   assert.deepEqual(panelErrors, []);
   console.log(
     "Chat panel loaded and completed a conversation without automatic RAG UI",
