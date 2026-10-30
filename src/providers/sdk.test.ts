@@ -3,6 +3,10 @@ import "../mocks/syscalls.ts";
 import "../init.ts";
 import { SDKProvider, SDKEmbeddingProvider, SDKImageProvider } from "./sdk.ts";
 
+vi.mock("../model-metadata.ts", () => ({
+  getModelContextLimit: async () => 128000,
+}));
+
 const connection = {
   provider: "openai",
   apiKey: "test-key",

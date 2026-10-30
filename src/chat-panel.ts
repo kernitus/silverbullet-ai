@@ -882,19 +882,16 @@ async function loadPersistedTokenUsage(): Promise<void> {
   tokenUsageLoaded = true;
 }
 
-/**
- * Gets the context window limit for a model.
- * First tries the provider's API (e.g., Ollama), then falls back to LiteLLM metadata.
- */
+/** Gets the same standard context allowance used by automatic compaction. */
 async function getContextLimit(
   modelName: string,
   providerHint?: string,
 ): Promise<number | null> {
-  const providerLimit = await currentAIProvider?.getContextLimit(modelName);
-  if (providerLimit) {
-    return providerLimit;
-  }
-  return lookupModelContextLimit(modelName, providerHint);
+  return (
+    aiSettings?.chat?.contextWindowTokens ??
+    (await lookupModelContextLimit(modelName, providerHint)) ??
+    64000
+  );
 }
 
 export interface ChatStatus {

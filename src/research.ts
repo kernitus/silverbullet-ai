@@ -1,3 +1,4 @@
+import { estimateTokenCount } from "tokenx";
 import {
   ToolLoopAgent,
   isStepCount,
@@ -16,6 +17,7 @@ export function researchTool(options: {
   providerOptions?: ProviderOptions;
   permissions?: PathPermissions;
   maxSteps?: number;
+  contextWindow?: number;
   onUsage?: (usage: import("ai").LanguageModelUsage) => void | Promise<void>;
   beforeRequest?: () => void;
   onCheckpoint?: (messages: ModelMessage[]) => Promise<void>;
@@ -103,7 +105,8 @@ export function researchTool(options: {
         model: options.model,
         providerOptions: options.providerOptions,
         abortSignal,
-        maxChars: 40000,
+        contextWindow: options.contextWindow,
+        toolTokens: estimateTokenCount(JSON.stringify(definitions)),
         onUsage: options.onUsage,
         beforeRequest: options.beforeRequest,
       });
@@ -124,6 +127,7 @@ export function researchTool(options: {
           return { messages: prepared };
         },
         onStepEnd: async (step) => {
+          prepare.observeUsage(step.usage.inputTokens);
           records.push(...step.response.messages);
           interim.length = 0;
           await options.onCheckpoint?.([...records]);

@@ -9,6 +9,7 @@ const LITELLM_URL =
 const LITELLM_TIMEOUT_MS = 60_000;
 
 export type ModelMetadata = {
+  [key: string]: unknown;
   max_input_tokens?: number;
   max_output_tokens?: number;
   max_tokens?: number;
@@ -108,7 +109,7 @@ export async function fetchModelMetadata(): Promise<
   Record<string, ModelMetadata>
 > {
   // Check cache first
-  const cached = await clientStore.get(CACHE_KEY) as CacheData | null;
+  const cached = (await clientStore.get(CACHE_KEY)) as CacheData | null;
   if (cached && Date.now() - cached.fetchedAt < CACHE_TTL) {
     return cached.data;
   }
@@ -125,7 +126,7 @@ export async function fetchModelMetadata(): Promise<
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
-    const data = await response.json() as Record<string, ModelMetadata>;
+    const data = (await response.json()) as Record<string, ModelMetadata>;
 
     // Cache the data
     const cacheData: CacheData = {
@@ -160,8 +161,7 @@ export async function getModelContextLimit(
     return null;
   }
 
-  // Prefer max_input_tokens, fall back to max_tokens
-  return model.max_input_tokens ?? model.max_tokens ?? null;
+  return standardContextLimit(model);
 }
 
 export async function getModelMetadata(
@@ -180,4 +180,20 @@ export async function refreshModelMetadata(): Promise<void> {
   // Clear cache to force refresh
   await clientStore.del(CACHE_KEY);
   await fetchModelMetadata();
+}
+
+// Long-context pricing starts at the standard-context boundary. The catalogue's
+// max_tokens field is sometimes an output limit, so it is not an input fallback.
+export function standardContextLimit(model: ModelMetadata): number | null {
+  const maximum = model.max_input_tokens;
+  if (!Number.isSafeInteger(maximum) || maximum! <= 0) return null;
+  const thresholds = Object.keys(model)
+    .flatMap((key) => {
+      const match = key.match(/^input_cost_per_token_above_(\d+)k_tokens$/);
+      return match && typeof model[key] === "number"
+        ? [Number(match[1]) * 1000]
+        : [];
+    })
+    .filter((limit) => limit > 0);
+  return Math.min(maximum!, ...thresholds);
 }

@@ -1,8 +1,11 @@
+import { getModelContextLimit } from "./model-metadata.ts";
+import { estimateTokenCount } from "tokenx";
 import { consumeAgentStream } from "./ui-stream.ts";
 import { computeApprovalDiff, type DiffLine } from "./diff.ts";
 import { hashSHA256 } from "@silverbulletmd/silverbullet/lib/crypto";
 import {
   ToolLoopAgent,
+  asSchema,
   isStepCount,
   type ModelMessage,
   type ToolSet,
@@ -1137,26 +1140,12 @@ async function runSDKChat(
         "Run token budget reached. Completed work has been saved.",
       );
   };
-  const prepareContext = createContextManager({
-    model: provider.languageModel,
-    providerOptions: provider.providerOptions,
-    abortSignal: signal,
-    maxChars: aiSettings?.chat?.contextMaxChars,
-    onUsage: accountUsage,
-    beforeRequest: checkBudget,
-    state: options.compaction,
-    cacheKey: await hashSHA256(
-      JSON.stringify([
-        typeof provider.languageModel === "string"
-          ? provider.languageModel
-          : [provider.languageModel.provider, provider.languageModel.modelId],
-        provider.providerOptions,
-        permissions,
-        messages.filter((m) => m.role === "system"),
-      ]),
-    ),
-    onCompaction: options.onCompaction,
-  });
+  const contextWindow =
+    aiSettings?.chat?.contextWindowTokens ??
+    (provider.name
+      ? await getModelContextLimit(provider.modelName, provider.name)
+      : null) ??
+    64000;
   let executedTools = false;
   let stopAfterToolError = false;
   if (
@@ -1169,6 +1158,7 @@ async function runSDKChat(
       providerOptions: provider.providerOptions,
       permissions,
       maxSteps: aiSettings?.chat?.researchMaxSteps,
+      contextWindow,
       onUsage: accountUsage,
       beforeRequest: () => {
         checkBudget();
@@ -1184,6 +1174,38 @@ async function runSDKChat(
         options.onProgress?.(`Research: ${name} ${JSON.stringify(input)}`),
     });
   }
+  const prepareContext = createContextManager({
+    model: provider.languageModel,
+    providerOptions: provider.providerOptions,
+    abortSignal: signal,
+    maxChars: aiSettings?.chat?.contextMaxChars,
+    contextWindow,
+    toolTokens: estimateTokenCount(
+      JSON.stringify(
+        await Promise.all(
+          Object.entries(sdkTools).map(async ([name, tool]) => ({
+            name,
+            description: tool.description,
+            schema: await asSchema(tool.inputSchema).jsonSchema,
+          })),
+        ),
+      ),
+    ),
+    onUsage: accountUsage,
+    beforeRequest: checkBudget,
+    state: options.compaction,
+    cacheKey: await hashSHA256(
+      JSON.stringify([
+        typeof provider.languageModel === "string"
+          ? provider.languageModel
+          : [provider.languageModel.provider, provider.languageModel.modelId],
+        provider.providerOptions,
+        permissions,
+        messages.filter((m) => m.role === "system"),
+      ]),
+    ),
+    onCompaction: options.onCompaction,
+  });
   for (const [name, definition] of Object.entries(sdkTools)) {
     const researchExecute =
       name === "research_notes" ? definition.execute : undefined;
@@ -1299,6 +1321,7 @@ async function runSDKChat(
       return { messages: prepared };
     },
     onStepEnd: async (step: import("ai").StepResult<ToolSet>) => {
+      prepareContext.observeUsage(step.usage.inputTokens);
       if (checkpointFailure || researchFailure || inFlight?.research) {
         await accountUsage(step.usage);
       }

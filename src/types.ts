@@ -240,6 +240,7 @@ export enum EmbeddingProvider {
 export type ChatSettings = {
   allowUnsafeLua?: boolean;
   contextMaxChars?: number;
+  contextWindowTokens?: number;
   toolResultMaxChars?: number;
   researchMaxSteps?: number;
   runMaxTokens?: number;
