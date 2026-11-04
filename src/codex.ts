@@ -12,8 +12,21 @@ export function codexFetch(
       "Codex account connections require useProxy = false so the browser can send its session cookie directly to the account service.",
     );
   const transport = sdkFetch(false, connection.timeout, "Codex account");
-  return (input, init) =>
-    transport(input, { ...init, credentials: "include", redirect: "error" });
+  return (input, init) => {
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    // The SDK's dummy API key is not an account credential. Sending it
+    // suppresses browser-managed HTTP authentication at the reverse proxy.
+    if (headers.get("authorization") === "Bearer login-with-chatgpt-proxy")
+      headers.delete("authorization");
+    return transport(input, {
+      ...init,
+      headers,
+      credentials: "include",
+      redirect: "error",
+    });
+  };
 }
 
 export function codexProvider(connection: ProviderConnection) {
